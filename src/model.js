@@ -5,7 +5,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   preset: 'aurora', colorMode: 'gradient', colorA: '#53e8ef', colorB: '#b79aff',
   particles: true, particleStyle: 'sparks', particleAmount: 65, particleSpeed: 45, turbulence: 55,
   glow: 70, trails: true, saber: true, keyboard: true, grid: true,
-  noteStyle: 'glass', fallTime: 3.8, background: '#060910', backgroundDim: 45,
+  noteStyle: 'glass', fallTime: 3.8, background: '#060910', backgroundDim: 45, backgroundOpacity: 100,
   keyboardHeight: 17, minNote: 21, maxNote: 108, labels: false, previewQuality: 'balanced',
 });
 
@@ -39,7 +39,7 @@ export function sanitizeSettings(input = {}) {
   for (const key of Object.keys(result)) {
     if (typeof input[key] === typeof result[key]) result[key] = input[key];
   }
-  const ranges = { particleAmount: [0,100], particleSpeed: [0,100], turbulence: [0,100], glow: [0,100], fallTime: [1,8], backgroundDim: [0,100], keyboardHeight: [10,30], minNote: [0,126], maxNote: [1,127] };
+  const ranges = { particleAmount: [0,100], particleSpeed: [0,100], turbulence: [0,100], glow: [0,100], fallTime: [1,8], backgroundDim: [0,100], backgroundOpacity: [0,100], keyboardHeight: [10,30], minNote: [0,126], maxNote: [1,127] };
   for (const [key,[min,max]] of Object.entries(ranges)) result[key] = Number.isFinite(result[key]) ? Math.min(max, Math.max(min, result[key])) : DEFAULT_SETTINGS[key];
   result.minNote = Math.round(result.minNote);
   result.maxNote = Math.round(result.maxNote);

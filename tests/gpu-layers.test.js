@@ -99,3 +99,24 @@ test('held-note radiance reuses a bounded cache and refreshes when its appearanc
   active.clear(); const images = contexts[0].images.length; draw();
   assert.equal(contexts[0].images.length, images, 'no active keys means no radiance draw');
 });
+
+
+test('background opacity refreshes cached images and preserves foreground alpha', () => {
+  for (const background of [{ naturalWidth: 1920, naturalHeight: 1080 }, { videoWidth: 1920, videoHeight: 1080 }]) {
+    const { renderer, contexts } = instrumentedRenderer();
+    const draws = [];
+    const original = renderer.paintMedia;
+    renderer.paintMedia = function(ctx, ...args) {
+      const drawImage = ctx.drawImage;
+      ctx.drawImage = (...values) => { draws.push(ctx.globalAlpha); drawImage(...values); };
+      try { return original.call(this, ctx, ...args); }
+      finally { ctx.drawImage = drawImage; }
+    };
+    for (const opacity of [100, 40, 0]) {
+      renderer.drawBackground(background, { ...DEFAULT_SETTINGS, backgroundOpacity: opacity }, 1440, 810, 672, 1);
+      assert.equal(renderer.backgroundLayer.ctx.globalAlpha ?? 1, 1);
+      assert.equal(contexts[0].globalAlpha ?? 1, 1);
+    }
+    assert.deepEqual(draws, [1, 0.4], 'zero opacity skips media drawing');
+  }
+});

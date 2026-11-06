@@ -83,3 +83,12 @@ test('valid presets and disabled effects survive sanitization', () => {
   for (const key of ['particles', 'trails', 'saber', 'keyboard', 'grid']) assert.equal(clean[key], false);
   assert.equal(clean.labels, true);
 });
+
+
+test('background opacity is bounded and compatible with older saved looks', () => {
+  assert.equal(sanitizeSettings({}).backgroundOpacity, 100);
+  assert.equal(sanitizeSettings({ backgroundOpacity: -5 }).backgroundOpacity, 0);
+  assert.equal(sanitizeSettings({ backgroundOpacity: 150 }).backgroundOpacity, 100);
+  assert.equal(sanitizeSettings({ backgroundOpacity: 40 }).backgroundOpacity, 40);
+  assert.equal(sanitizeSettings({ backgroundOpacity: NaN }).backgroundOpacity, 100);
+});

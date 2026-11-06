@@ -197,19 +197,20 @@ export class PianoRenderer {
     const sourceWidth = background && (background.videoWidth || background.naturalWidth || background.width);
     const sourceHeight = background && (background.videoHeight || background.naturalHeight || background.height);
     const hasMedia = sourceWidth > 0 && sourceHeight > 0;
+    const opacity = (settings.backgroundOpacity ?? 100) / 100;
     const dynamic = !!background && !(background.naturalWidth > 0 && background.naturalHeight > 0);
     const opaque = !dynamic;
-    const signature = `${width}:${height}:${strike}:${this.layoutKey}:${settings.grid}:${!!background}:${hasMedia}:${settings.background}:${settings.backgroundDim}:${settings.colorA}:${settings.colorB}:${opaque ? `${sourceWidth}:${sourceHeight}:${background?.currentSrc || background?.src || ''}` : ''}`;
+    const signature = `${width}:${height}:${strike}:${this.layoutKey}:${settings.grid}:${!!background}:${hasMedia}:${settings.background}:${settings.backgroundDim}:${opacity}:${settings.colorA}:${settings.colorB}:${opaque ? `${sourceWidth}:${sourceHeight}:${background?.currentSrc || background?.src || ''}` : ''}`;
     let layer = this.backgroundLayer;
     if (!layer || layer.canvas.width !== width || layer.canvas.height !== paintHeight || layer.opaque !== opaque) {
       layer = this.backgroundLayer = this.createLayer(width, paintHeight, opaque);
     }
     if (dynamic || !layer) {
       c.fillStyle = settings.background; c.fillRect(0, 0, width, paintHeight);
-      if (hasMedia) this.paintMedia(c, background, sourceWidth, sourceHeight, width, height, paintHeight);
+      if (hasMedia) this.paintMedia(c, background, sourceWidth, sourceHeight, width, height, paintHeight, opacity);
     }
     if (!layer) {
-      if (hasMedia) { c.fillStyle = `rgba(0,0,0,${settings.backgroundDim / 100})`; c.fillRect(0, 0, width, paintHeight); }
+      if (hasMedia) { c.fillStyle = `rgba(0,0,0,${settings.backgroundDim / 100 * opacity})`; c.fillRect(0, 0, width, paintHeight); }
       this.paintBackground(c, !!background, settings, width, height, strike, scale);
       return;
     }
@@ -217,9 +218,9 @@ export class PianoRenderer {
       const target = layer.ctx;
       if (opaque) {
         target.fillStyle = settings.background; target.fillRect(0, 0, width, paintHeight);
-        if (hasMedia) this.paintMedia(target, background, sourceWidth, sourceHeight, width, height, paintHeight);
+        if (hasMedia) this.paintMedia(target, background, sourceWidth, sourceHeight, width, height, paintHeight, opacity);
       } else target.clearRect(0, 0, width, paintHeight);
-      if (hasMedia) { target.fillStyle = `rgba(0,0,0,${settings.backgroundDim / 100})`; target.fillRect(0, 0, width, paintHeight); }
+      if (hasMedia) { target.fillStyle = `rgba(0,0,0,${settings.backgroundDim / 100 * opacity})`; target.fillRect(0, 0, width, paintHeight); }
       this.paintBackground(target, !!background, settings, width, height, strike, scale);
       layer.key = signature;
       layer.background = opaque ? background : null;
@@ -227,13 +228,17 @@ export class PianoRenderer {
     c.drawImage(layer.canvas, 0, 0);
   }
 
-  paintMedia(c, background, sourceWidth, sourceHeight, width, height, paintHeight) {
+  paintMedia(c, background, sourceWidth, sourceHeight, width, height, paintHeight, opacity = 1) {
+    if (opacity <= 0) return;
+    const previousAlpha = c.globalAlpha ?? 1;
     const ratio = Math.max(width / sourceWidth, height / sourceHeight);
     const sourceX = (sourceWidth - width / ratio) / 2;
     const sourceY = (sourceHeight - height / ratio) / 2;
     try {
+      c.globalAlpha = previousAlpha * opacity;
       c.drawImage(background, sourceX, sourceY, width / ratio, paintHeight / ratio, 0, 0, width, paintHeight);
     } catch { /* Video may be between decoded frames. */ }
+    finally { c.globalAlpha = previousAlpha; }
   }
 
   paintBackground(c, hasBackground, settings, width, height, strike, scale) {
