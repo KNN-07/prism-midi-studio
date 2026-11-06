@@ -1114,7 +1114,7 @@ dialog .shortcut-list {
   .preset-art {
     height:65px
   }
-  
+
 }
 @media(max-width:1150px) {
   .workspace {
@@ -1162,7 +1162,7 @@ dialog .shortcut-list {
   .editor-title h1 {
     font-size:19px
   }
-  
+
 }
 @media(max-width:950px) {
   .workspace {
@@ -1202,7 +1202,7 @@ dialog .shortcut-list {
   .nav {
     gap:18px
   }
-  
+
 }
 @media(max-width:700px) {
   .topbar {
@@ -1321,11 +1321,11 @@ dialog .shortcut-list {
   .editor-bottom {
     margin-top:0
   }
-  
+
 }
 @media(prefers-reduced-motion:reduce) {
   * {
     transition:none!important
   }
-  
+
 }
