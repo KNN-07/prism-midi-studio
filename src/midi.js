@@ -165,8 +165,19 @@ export function createDemoSong() {
 /** Write a format-1 MIDI with a constant tempo, preserving note timing in seconds. */
 export function encodeMidi(song) {
   const ppq = 480, bpm = Math.max(20, Math.min(300, song.bpm || 120)), micros = Math.round(60000000 / bpm);
-  const toTick = time => Math.max(0, Math.round(time * 1e6 * ppq / micros));
-  const variable = n => { const out = [n & 127]; while ((n = Math.floor(n / 128))) out.unshift((n & 127) | 128); return out; };
+  const toTick = time => {
+    const tick = Math.round(time * 1e6 * ppq / micros);
+    if (!Number.isFinite(time) || time < 0 || !Number.isSafeInteger(tick)) throw new Error('MIDI export requires finite, nonnegative note times within the supported range.');
+    return tick;
+  };
+  const variable = n => {
+    // Standard MIDI variable-length values have at most four bytes. Reject
+    // invalid deltas before looping, including Infinity from malformed input.
+    if (!Number.isSafeInteger(n) || n < 0 || n > 0x0fffffff) throw new Error('This performance has a gap too long for Standard MIDI export.');
+    const out = [n & 127];
+    while ((n = Math.floor(n / 128))) out.unshift((n & 127) | 128);
+    return out;
+  };
   const text = str => [...new TextEncoder().encode(str)];
   const uint32 = n => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
   const chunk = (tag, body) => {
@@ -198,7 +209,7 @@ export function encodeMidi(song) {
     events.sort((a,b) => a.tick - b.tick || Number(a.on) - Number(b.on));
     let last = 0;
     for (const event of events) { body.push(...variable(event.tick - last), ...event.data); last = event.tick; }
-    body.push(...variable(Math.max(last, toTick(song.duration || 0)) - last),255,47,0);
+    body.push(...variable(Math.max(last, toTick(song.duration ?? 0)) - last),255,47,0);
     chunks.push(chunk('MTrk', body));
   }
   const output = new Uint8Array(chunks.reduce((length, data) => length + data.length, 0));

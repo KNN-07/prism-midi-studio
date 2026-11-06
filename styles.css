@@ -307,6 +307,36 @@ button svg {
   gap:10px;
   margin-bottom:22px
 }
+.workspace-tabs {
+  display:flex;
+  gap:6px;
+  margin:0 0 14px;
+  align-self:flex-start;
+  padding:4px;
+  border:1px solid var(--border);
+  border-radius:9px;
+  background:#15171d
+}
+.workspace-tabs button {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 13px;
+  border-radius:5px;
+  color:var(--muted);
+  font-size:12px
+}
+.workspace-tabs button.active {
+  background:#263b34;
+  color:var(--accent)
+}
+.workspace-tabs svg { width:15px; height:15px }
+[id^="workspace-panel-"][hidden] { display:none }
+.workspace.midi-editing { grid-template-columns:220px minmax(0,1fr) }
+.workspace.midi-editing > .inspector { display:none }
+@media(max-width:950px) {
+  .workspace.midi-editing { grid-template-columns:minmax(0,1fr) }
+}
 .editor-title h1 {
   font-size:21px;
   letter-spacing:-.6px;

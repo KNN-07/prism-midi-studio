@@ -18,6 +18,7 @@ No account. No installation to try it. Your MIDI files and background media stay
 - **Find your mood.** Start with Aurora, Ember, Nocturne, or Spectrum. Choose glass, solid, or outlined notes, then tune particles, ribbons, glow, and keyboard light.
 - **Set the scene.** Add your own background image or video. Adjust colors, darkness, keyboard size, and the falling-note timing.
 - **Practice and explore.** Play, pause, seek, loop, and change playback speed. You can also play an octave with your computer keyboard.
+- **Make quick MIDI edits.** Open the MIDI editor tab to add, move, resize, or delete notes, adjust velocity, and undo or redo changes. Listen with the shared playback controls, then download your edited MIDI.
 - **Keep your signature look.** Settings persist in your browser. Save and load a settings file to reuse or share your style.
 - **Capture the moment.** Save a Full HD PNG or record a 720p/1080p video with synthesized piano audio, targeting 30 or 60 fps. Preview the video before downloading it.
 
@@ -26,6 +27,10 @@ No account. No installation to try it. Your MIDI files and background media stay
 1. **[Open the studio](https://knn-07.github.io/prism-midi-studio/)** and press **Play** to try *First light*, or choose **Import MIDI** to load your performance.
 2. **Choose a preset** and make it yours using the Effects, Color, and Scene controls.
 3. **Choose Export video** to record your performance or save an image.
+
+For quick corrections, switch to **MIDI editor** above the preview. Select a note to change its pitch, start, length, or velocity; drag it to move it, or drag its right edge to resize. Use **Add note** or double-click an empty area to draw a note. Changes apply to playback and the visualizer immediately and stay in this session; choose **Download MIDI** to keep them before reloading or importing another performance.
+
+The editor uses seconds for timing, with optional snapping based on the performance's initial BPM. MIDI downloads write note timings and track names at a constant tempo; they do not preserve the original tempo map, pedal controllers, or other non-note events. Overlapping repetitions of the same pitch on the same channel can have different release lengths when reopened in MIDI software.
 
 For live input, connect a MIDI keyboard and choose **Connect a keyboard**. No keyboard handy? Use `A W S E D F T G Y H U J K` to play from C4.
 
@@ -55,7 +60,7 @@ For lighter graphics usage, choose **Scene → Preview quality → Low power**. 
 
 PRISM supports Standard MIDI formats 0 and 1. Format 2 and SMPTE-timed files are not supported. All MIDI instruments use the same synthesized piano voice; instrument program changes and pitch bend are not reproduced.
 
-PRISM is a MIDI visualization studio. It does not transcribe audio into MIDI or include a note editor.
+PRISM includes a quick piano-roll note editor. It does not transcribe audio into MIDI.
 
 </details>
 
@@ -91,6 +96,7 @@ Rendering uses an on-demand frame loop, indexed note queries, bounded texture ca
 | `src/app.js` | Studio UI, transport, settings, and export |
 | `src/renderer.js` | Piano, notes, lighting, and particles |
 | `src/midi.js`, `src/audio.js`, `src/live-midi.js` | MIDI files, demo composition, synthesis, and live input |
+| `src/midi-editor.js`, `src/midi-edit.js` | Piano-roll editor and immutable note editing |
 | `src/frame-loop.js`, `src/preview.js` | Rendering cadence and preview quality |
 | `src/note-index.js`, `src/note-sprites.js` | Note queries and glow texture caching |
 | `src/model.js` | Settings and presets |

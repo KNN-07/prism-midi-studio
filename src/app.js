@@ -5,6 +5,7 @@ import { PianoRenderer } from './renderer.js';
 import { LiveMidi } from './live-midi.js';
 import { FrameLoop, FrameCadence } from './frame-loop.js';
 import { previewProfile, previewSize } from './preview.js';
+import { MidiEditor } from './midi-editor.js';
 
 const paths = {
   prism: '<path d="M12 2 23 22H1Z"/><path d="m12 2 4 20M1 22l14-11"/>',
@@ -48,6 +49,7 @@ let liveSnapshot = [], liveSnapshotDirty = false;
 const live = new LiveMidi(audio, { onStart: beginLive, getTime: () => performance.now()/1000-liveStarted, onChange: () => { liveSnapshotDirty = true; requestFrame(); }, onError: () => toast('Your browser could not start audio.',true) }, liveNotes);
 let recording = null, preparingRecording = false, toastTimer, dragDepth = 0, settingsTimer;
 let renderedVideo = null;
+let activeWorkspace = 'visualizer';
 
 function slider(key, label, min, max, step = 1, suffix = '%') {
   return `<div class="slider-row"><label class="slider-label" for="setting-${key}">${label}<output id="value-${key}"></output></label><input type="range" id="setting-${key}" data-setting="${key}" data-unit="${suffix}" min="${min}" max="${max}" step="${step}"></div>`;
@@ -71,10 +73,12 @@ $('#app').innerHTML = `
     </aside>
     <main class="editor">
       <div class="editor-title"><div><h1>Let your music be seen.</h1><p>Your performance. A whole new light.</p></div><span class="chip"><span class="status-dot"></span> LIVE PREVIEW</span></div>
-      <div class="stage-wrapper"><div class="stage-toolbar"><span class="eyebrow">Canvas <span style="color:#535c6c;margin:0 5px">/</span> <span id="preset-heading">Aurora</span></span><div class="stage-options"><span>16:9</span><button class="tool-icon" id="fit-keys" title="Fit keyboard to this performance" aria-label="Fit keyboard to performance">${icon('fit')}</button><button class="tool-icon" id="screenshot" title="Save a PNG screenshot" aria-label="Save PNG screenshot">${icon('camera')}</button><button class="tool-icon" id="fullscreen" title="Fullscreen preview" aria-label="Fullscreen preview">${icon('expand')}</button></div></div>
+      <div class="workspace-tabs" role="tablist" aria-label="Performance workspace"><button id="workspace-visualizer" role="tab" data-workspace="visualizer" aria-controls="workspace-panel-visualizer" aria-selected="true" class="active">${icon('sparkles')} Visualizer</button><button id="workspace-midi" role="tab" data-workspace="midi" aria-controls="workspace-panel-midi" aria-selected="false" tabindex="-1">${icon('piano')} MIDI editor</button></div>
+      <div class="stage-wrapper" id="workspace-panel-visualizer" role="tabpanel" aria-labelledby="workspace-visualizer"><div class="stage-toolbar"><span class="eyebrow">Canvas <span style="color:#535c6c;margin:0 5px">/</span> <span id="preset-heading">Aurora</span></span><div class="stage-options"><span>16:9</span><button class="tool-icon" id="fit-keys" title="Fit keyboard to this performance" aria-label="Fit keyboard to performance">${icon('fit')}</button><button class="tool-icon" id="screenshot" title="Save a PNG screenshot" aria-label="Save PNG screenshot">${icon('camera')}</button><button class="tool-icon" id="fullscreen" title="Fullscreen preview" aria-label="Fullscreen preview">${icon('expand')}</button></div></div>
         <div class="stage" id="stage"><canvas id="visualizer" aria-label="Piano visualization preview"></canvas><div class="stage-overlay"><span id="stage-title">MIDNIGHT BLOOM</span><p>PRISM / PIANO SESSIONS</p></div><span class="recording-indicator" id="rec-indicator">● REC</span></div>
         <div class="stage-footer"><span>${icon('music')}<span id="note-count"></span></span><span>${icon('piano')}<span id="key-count">88 keys</span></span><span id="bpm-info"></span><span class="engine"><span class="status-dot connected"></span> Real-time render</span></div>
       </div>
+      <section id="workspace-panel-midi" role="tabpanel" aria-labelledby="workspace-midi" hidden></section>
       <div class="recording-banner" id="recording-banner"><span id="recording-progress">Recording your performance…</span><button class="btn" id="recording-stop">Stop & preview</button></div>
       <div class="transport"><div class="timecode"><b id="current-time">00:08</b> <span>/ <span id="total-time">01:12</span></span></div><div class="playback-controls"><button class="tool-icon" id="restart" title="Back to start" aria-label="Back to start">${icon('back')}</button><button class="play-button" id="play" title="Play (Space)" aria-label="Play">${icon('play')}</button><button class="tool-icon" id="loop" aria-label="Toggle loop" aria-pressed="false" title="Loop (L)">${icon('loop')}</button><select class="speed" id="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></div><div class="volume-controls"><button class="tool-icon" id="mute" title="Mute (M)" aria-label="Mute">${icon('volume')}</button><input type="range" id="volume" min="0" max="100" value="65" aria-label="Volume"></div></div>
       <section class="timeline-section" aria-label="Performance timeline"><div class="timeline-heading"><span class="eyebrow">Performance timeline</span><span id="timeline-name">Midnight Bloom.mid</span></div><div class="timeline-ruler" id="timeline-ruler"></div><div class="timeline-track"><canvas id="timeline" aria-hidden="true"></canvas><div class="playhead" id="playhead"></div><input id="seek" type="range" min="0" max="72" step="0.01" value="8.5" aria-label="Seek performance"></div></section>
@@ -104,9 +108,29 @@ let previewQuality = settings.previewQuality, previewDirty = true, previewVisibl
 const transport = { play: $('#play'), time: $('#current-time'), seek: $('#seek'), playhead: $('#playhead'), progress: $('#recording-progress') };
 let transportPlaying, transportTime = '', transportPosition = -1, timelineWidth = 0;
 let timelineDirty = true, timelineSignature = '', timelineNotes = null, timelineLength = -1, timelineBounds = [21, 108];
+const midiEditor = new MidiEditor($('#workspace-panel-midi'), {
+  onChange(nextSong) {
+    if (recording || preparingRecording) return;
+    playing = false; audio.stop(); stopLive(); song = nextSong;
+    time = Math.min(time, song.duration); renderer.clearParticles();
+    updateSongUI(); syncVideo(true);
+  },
+  onSeek: seek,
+  onDownload(editedSong) {
+    try {
+      download(new Blob([encodeMidi(editedSong)], { type: 'audio/midi' }), `${safeName(editedSong.name)}-edited.mid`);
+      toast('Saved your edited MIDI.');
+    } catch (error) { toast(`Could not save MIDI: ${error.message}`, true); }
+  },
+  onError: message => toast(message, true),
+});
+midiEditor.setSong(song, { resetHistory: true });
+midiEditor.setTime(time);
+midiEditor.setActive(false);
 function requestFrame() { previewDirty = true; if (!document.hidden) frameLoop.invalidate(); }
 function resizePreview() {
   const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
   const size = previewSize(rect.width, rect.height, devicePixelRatio || 1, settings.previewQuality);
   renderer.resize(size.width, size.height);
   requestFrame();
@@ -179,6 +203,7 @@ function updateSongUI(isDemo = false) {
   $('#note-count').textContent = `${song.notes.length.toLocaleString()} notes`; $('#bpm-info').textContent = `${Math.round(song.bpm)} BPM`;
   $('#total-time').textContent = formatTime(song.duration); $('#seek').max = song.duration;
   $('#timeline-ruler').innerHTML = Array.from({length:7},(_,i)=>`<span>${formatTime(song.duration*i/6)}</span>`).join('');
+  transportPosition = -1;
   updateTransport(); drawTimeline();
 }
 function updateTransport(invalidate = true) {
@@ -197,6 +222,7 @@ function updateTransport(invalidate = true) {
   if (transportPosition !== time) {
     transportPosition = time; transport.seek.value = time;
     transport.playhead.style.transform = `translateX(${time / song.duration * timelineWidth}px)`;
+    midiEditor.setTime(time);
   }
   if (invalidate) requestFrame();
 }
@@ -211,7 +237,9 @@ function seek(value) {
 }
 function loadSong(nextSong, isDemo = false) {
   if (recording || preparingRecording) return toast('Finish the recording before changing the performance.',true);
-  playing = false; audio.stop(); stopLive(); song = nextSong; time = 0; renderer.clearParticles(); updateSongUI(isDemo); syncVideo(true);
+  playing = false; audio.stop(); stopLive(); song = nextSong; time = 0;
+  midiEditor.setSong(song, { resetHistory: true });
+  renderer.clearParticles(); updateSongUI(isDemo); syncVideo(true);
 }
 async function importMidi(file) {
   if (!file) return;
@@ -265,6 +293,7 @@ async function startRecording() {
   if (liveMode) return toast('Press Play to return to your MIDI performance before exporting.',true);
   const mimeType = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'].find(type=>MediaRecorder.isTypeSupported(type));
   if (!mimeType) return toast('No supported video recording format was found.',true);
+  selectWorkspace('visualizer');
   preparingRecording = true; setRecordingControls(true); $('#export-start').disabled = true; $('#export-start').textContent = 'Preparing…';
   let stream;
   try {
@@ -318,7 +347,10 @@ async function startRecording() {
   } catch(error) { if(stream) for(const track of stream.getTracks()) track.stop(); recording=null; setRecordingControls(false); updateTransport(); toast(`Could not start recording: ${error.message}`,true); }
   finally { preparingRecording = false; $('#export-start').disabled = false; $('#export-start').innerHTML = `${icon('video')} Record video`; }
 }
-function setRecordingControls(disabled) { for(const id of ['play','restart','seek','speed','loop','import-top','import-side','demo-button','export-open','connect-midi','mobile-midi','background-upload','background-side','video-offset']) $(`#${id}`).disabled=disabled; }
+function setRecordingControls(disabled) {
+  for(const id of ['play','restart','seek','speed','loop','import-top','import-side','demo-button','export-open','connect-midi','mobile-midi','background-upload','background-side','video-offset','workspace-midi']) $(`#${id}`).disabled=disabled;
+  midiEditor.setDisabled(disabled);
+}
 function finishRecording() { if(recording && recording.recorder.state !== 'inactive') { playing=false; audio.stop(); recording.recorder.stop(); } }
 
 function beginLive() {
@@ -355,6 +387,38 @@ document.querySelectorAll('[data-setting]').forEach(input=>input.addEventListene
   settings=sanitizeSettings({...settings,[key]:value,preset:key==='previewQuality'?settings.preset:'custom'}); updateSettingsUI(); saveSettings(); drawTimeline();
 }));
 document.querySelectorAll('[data-preset]').forEach(button=>button.addEventListener('click',()=>{ const preset=PRESETS.find(p=>p.id===button.dataset.preset); settings=sanitizeSettings({...settings,...preset.settings,preset:preset.id}); updateSettingsUI(); saveSettings(); drawTimeline(); }));
+function selectWorkspace(name) {
+  if (recording || preparingRecording) return;
+  activeWorkspace = name;
+  const editing = name === 'midi';
+  document.querySelectorAll('[data-workspace]').forEach(button => {
+    const active = button.dataset.workspace === name;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+    button.tabIndex = active ? 0 : -1;
+    $(`#workspace-panel-${button.dataset.workspace}`).hidden = !active;
+  });
+  $('.workspace').classList.toggle('midi-editing', editing);
+  $('.editor-title h1').textContent = editing ? 'Shape your performance.' : 'Let your music be seen.';
+  $('.editor-title p').textContent = editing ? 'Quick note edits. Ready to play.' : 'Your performance. A whole new light.';
+  $('.editor-title .chip').innerHTML = `<span class="status-dot"></span> ${editing ? 'MIDI EDITOR' : 'LIVE PREVIEW'}`;
+  if (editing && liveMode) { stopLive(); audio.stop(); }
+  midiEditor.setActive(editing);
+  previewVisible = !editing;
+  if (!editing) resizePreview();
+  syncVideo(true); drawTimeline();
+}
+document.querySelectorAll('[data-workspace]').forEach((button, index) => {
+  button.addEventListener('click', () => selectWorkspace(button.dataset.workspace));
+  button.addEventListener('keydown', event => {
+    if (!['ArrowRight','ArrowLeft','Home','End'].includes(event.key)) return;
+    event.preventDefault(); event.stopPropagation();
+    if (recording || preparingRecording) return;
+    const tabs = [...document.querySelectorAll('[data-workspace]')];
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+    selectWorkspace(tabs[next].dataset.workspace); tabs[next].focus();
+  });
+});
 function selectTab(button) { document.querySelectorAll('[data-tab]').forEach(tab=>{ const active=button===tab; tab.classList.toggle('active',active); tab.setAttribute('aria-selected',String(active)); tab.tabIndex=active?0:-1; $(`#panel-${tab.dataset.tab}`).hidden=!active; }); }
 document.querySelectorAll('[data-tab]').forEach((button,index)=>{ button.addEventListener('click',()=>selectTab(button)); button.addEventListener('keydown',event=>{ if(['ArrowRight','ArrowLeft','Home','End'].includes(event.key)) { event.preventDefault(); const tabs=[...document.querySelectorAll('[data-tab]')]; const next=event.key==='Home'?0:event.key==='End'?2:(index+(event.key==='ArrowRight'?1:2))%3; selectTab(tabs[next]); tabs[next].focus(); } }); }); selectTab($('#tab-effects'));
 for(const id of ['import-top','import-side']) $(`#${id}`).onclick=()=>$('#midi-file').click();
@@ -377,7 +441,7 @@ $('#export-open').onclick=()=>openDialog('export-dialog'); $('#export-start').on
 $('#save-video').onclick=()=>{if(renderedVideo)download(renderedVideo.blob,renderedVideo.filename);};
 $('#result-dialog').addEventListener('close',()=>$('#result-video').pause());
 for(const id of ['help-nav','mobile-help']) $(`#${id}`).onclick=()=>openDialog('help-dialog');
-$('#studio-nav').onclick=()=>{document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());$('#stage').scrollIntoView({behavior:'smooth',block:'center'});};
+$('#studio-nav').onclick=()=>{document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());selectWorkspace('visualizer');$('#stage').scrollIntoView({behavior:'smooth',block:'center'});};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=> $(`#${button.dataset.close}`).close());
 $('#download-demo').onclick=()=>download(new Blob([encodeMidi(createDemoSong())],{type:'audio/midi'}),'prism-first-light.mid');
 $('#reset-settings').onclick=()=>{settings={...DEFAULT_SETTINGS};updateSettingsUI();saveSettings();drawTimeline();toast('The original Aurora look is restored.');};
@@ -388,9 +452,9 @@ $('#disconnect-midi').onclick=()=>{disconnectMidi();toast('MIDI keyboard disconn
 
 const computerKeys={KeyA:60,KeyW:61,KeyS:62,KeyE:63,KeyD:64,KeyF:65,KeyT:66,KeyG:67,KeyY:68,KeyH:69,KeyU:70,KeyJ:71,KeyK:72};
 document.addEventListener('keydown',event=>{
-  if(event.ctrlKey||event.metaKey||event.altKey||event.repeat||event.target.matches('input,select,textarea,[contenteditable]')||$('dialog[open]'))return;
+  if(event.defaultPrevented||event.ctrlKey||event.metaKey||event.altKey||event.repeat||event.target.matches('input,select,textarea,[contenteditable]')||$('dialog[open]'))return;
   if(event.code==='Space'){event.preventDefault();void setPlaying(!playing);} else if(event.code==='ArrowLeft'){event.preventDefault();seek(time-5);} else if(event.code==='ArrowRight'){event.preventDefault();seek(time+5);} else if(event.code==='KeyL')$('#loop').click(); else if(event.code==='KeyM')$('#mute').click();
-  else if(computerKeys[event.code]!==undefined){event.preventDefault();computerHeld.set(event.code,computerKeys[event.code]);void liveOn(computerKeys[event.code]);}
+  else if(activeWorkspace !== 'midi' && computerKeys[event.code]!==undefined){event.preventDefault();computerHeld.set(event.code,computerKeys[event.code]);void liveOn(computerKeys[event.code]);}
 });
 document.addEventListener('keyup',event=>{if(computerHeld.has(event.code)){liveOff(computerHeld.get(event.code));computerHeld.delete(event.code);}});
 window.addEventListener('blur',()=>{for(const midi of computerHeld.values())liveOff(midi);computerHeld.clear();});

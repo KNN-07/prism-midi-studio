@@ -59,3 +59,21 @@ test('original demo survives MIDI export/import with timing and tracks', () => {
   }
   assert.equal(recovered.tracks[1].name,'Arpeggio & bass'); assert.equal(recovered.tracks[2].name,'Melody');
 });
+
+test('MIDI export rejects nonfinite or unsafe ticks before variable-length encoding', () => {
+  const song = { bpm: 120, duration: 1, notes: [{ midi: 60, time: 0, duration: 1, velocity: .75, track: 0, channel: 0 }] };
+  for (const value of [NaN, Infinity, -Infinity, 1e308]) {
+    assert.throws(() => encodeMidi({ ...song, notes: [{ ...song.notes[0], time: value }] }), /finite/);
+    assert.throws(() => encodeMidi({ ...song, notes: [{ ...song.notes[0], duration: value }] }), /finite/);
+    assert.throws(() => encodeMidi({ ...song, duration: value }), /finite/);
+  }
+  assert.throws(() => encodeMidi({ ...song, notes: [{ ...song.notes[0], time: 1e308, duration: 1e308 }] }), /finite/);
+});
+
+test('MIDI export bounds each delta to the four-byte Standard MIDI limit', () => {
+  const maxSeconds = 0x0fffffff / 960;
+  const song = { bpm: 120, duration: maxSeconds + 1, notes: [{ midi: 60, time: maxSeconds, duration: 1, velocity: .75, track: 0, channel: 0 }] };
+  assert.equal(parseMidi(encodeMidi(song)).notes[0].time, maxSeconds);
+  assert.throws(() => encodeMidi({ ...song, notes: [{ ...song.notes[0], time: maxSeconds + 1 / 960 }] }), /gap too long/);
+  assert.throws(() => encodeMidi({ ...song, duration: maxSeconds + 2, notes: [{ ...song.notes[0], time: 0 }] }), /gap too long/);
+});

@@ -1,0 +1,65 @@
+.midi-editor {
+  min-width:0;
+  border:1px solid #323a45;
+  border-radius:10px;
+  background:#151a22;
+  overflow:hidden;
+  box-shadow:0 14px 45px #0002;
+}
+.midi-editor[hidden] { display:none }
+.midi-editor-heading {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  padding:19px 18px 17px;
+  border-bottom:1px solid #2b333e;
+  background:linear-gradient(115deg,#1c2d2b,#1b202a 65%);
+}
+.midi-editor-heading h2 { margin:0 0 6px; font-size:17px; font-weight:550; letter-spacing:-.3px }
+.midi-editor-heading p { margin:0; color:#8d9caa; font-size:11px; line-height:1.5 }
+.midi-tools { display:flex; align-items:flex-end; flex-wrap:wrap; gap:12px; padding:14px 16px; border-bottom:1px solid #303946 }
+.midi-tool-group { display:flex; gap:5px }
+.midi-tools .btn { height:32px; padding:0 10px; font-size:11px; background:#232c37; border-color:#3b4654 }
+.midi-tools .btn[aria-pressed="true"] { color:#c6f4df; border-color:#89cbb0; background:#244638 }
+.midi-tools label,.midi-properties label { display:flex; flex-direction:column; gap:5px; color:#a0acbb; font-size:10px; font-weight:500 }
+.midi-tools select { border:1px solid #394654; border-radius:5px; background:#1b232d; color:#d3dde8; min-height:32px; font-size:11px; padding:0 25px 0 8px; max-width:205px }
+.midi-roll { height:390px; overflow:auto; overscroll-behavior:contain; scrollbar-color:#4a5969 #151c25; background:#12161d; position:relative }
+.midi-roll-space { position:relative; min-width:100%; min-height:100% }
+.midi-roll canvas { display:block; position:sticky; top:0; left:0; touch-action:pan-x pan-y; outline-offset:-3px }
+.midi-roll canvas:focus-visible { outline:2px solid #b2efd6 }
+.midi-roll-caption { padding:9px 16px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:7px 15px; font-size:10px; color:#8291a3; background:#1a222c; border-top:1px solid #303946 }
+.midi-properties { display:grid; grid-template-columns:minmax(125px,1.1fr) repeat(4,minmax(75px,1fr)) auto; gap:12px; align-items:end; padding:16px; border-top:1px solid #303946; margin:0 }
+.midi-selection { align-self:center; display:flex; flex-direction:column; gap:7px; min-width:0 }
+.midi-selection strong { font-size:12px; font-weight:550; color:#c2ebd9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.midi-note-stepper { display:flex; align-items:center; gap:4px; min-width:0 }
+.midi-note-stepper strong { margin-right:auto }
+.midi-note-stepper button { flex:none; width:23px; height:25px; border:1px solid #3b4756; border-radius:4px; background:#222d37; color:#c2ebd9; font-size:19px; line-height:19px; padding:0 }
+.midi-properties input { width:100%; min-width:0; height:34px; border:1px solid #3b4756; border-radius:5px; background:#101820; color:#dde6ee; font-size:12px; padding:0 8px }
+.midi-properties input:disabled { opacity:.45 }
+.midi-properties .btn { height:34px; padding:0 13px }
+.midi-help { margin:0; padding:0 16px 10px; color:#97a6b8; font-size:11px; line-height:1.7 }
+.midi-save-note { margin:0; padding:11px 16px; border-top:1px solid #29333d; color:#8caa9e; background:#17231f; font-size:10px; line-height:1.6 }
+@media(max-width:900px) {
+  .midi-tools { gap:10px; padding:12px }
+  .midi-properties { grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; padding:12px }
+  .midi-selection { grid-column:1 / 4 }
+  .midi-properties .btn { grid-column:4; grid-row:1 }
+  .midi-properties label { grid-row:2 }
+  .midi-roll { height:350px }
+}
+@media(max-width:520px) {
+  .midi-editor-heading { padding:15px 12px; gap:10px }
+  .midi-editor-heading h2 { font-size:15px }
+  .midi-editor-heading p { max-width:180px }
+  .midi-editor-heading>.btn { font-size:11px; padding:0 9px }
+  .midi-tools { gap:10px 8px }
+  .midi-tools label:first-of-type { flex:1; min-width:100px }
+  .midi-tools select { max-width:100%; padding-right:8px }
+  .midi-tools>.btn:last-child { margin-left:auto }
+  .midi-properties { grid-template-columns:repeat(2,minmax(0,1fr)) }
+  .midi-selection { grid-column:1; grid-row:1 }
+  .midi-properties .btn { grid-column:2; grid-row:1; justify-self:end }
+  .midi-properties label { grid-row:auto }
+  .midi-roll { height:310px }
+}
