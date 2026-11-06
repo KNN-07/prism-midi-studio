@@ -1,3 +1,7 @@
+import { EMPTY_NOTES, getNoteIndex } from './note-index.js';
+import { NoteShadowCache } from './note-sprites.js';
+export { NoteWindowIndex } from './note-index.js';
+
 const BLACK = new Set([1, 3, 6, 8, 10]);
 const PITCHES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
@@ -20,38 +24,6 @@ function rounded(context, x, y, width, height, radius) {
   context.roundRect(x, y, width, height, Math.min(radius, width / 2, height / 2));
 }
 
-/** Query onset-sorted notes that overlap a time window. A maximum-end segment
- * tree skips expired sections without losing an earlier, long sustained note.
- * Build cost O(n), typical query O(log n + matches). */
-export class NoteWindowIndex {
-  constructor(notes) {
-    this.notes = notes;
-    this.size = 1;
-    while (this.size < notes.length) this.size *= 2;
-    this.maxEnd = new Float64Array(this.size * 2);
-    this.maxEnd.fill(-Infinity);
-    for (let i = 0; i < notes.length; i++) this.maxEnd[this.size + i] = notes[i].time + notes[i].duration;
-    for (let i = this.size - 1; i > 0; i--) this.maxEnd[i] = Math.max(this.maxEnd[i * 2], this.maxEnd[i * 2 + 1]);
-  }
-
-  forEach(from, to, visit) {
-    let low = 0, high = this.notes.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if (this.notes[middle].time <= to) low = middle + 1; else high = middle;
-    }
-    const last = low;
-    const walk = (node, first, end) => {
-      if (first >= last || this.maxEnd[node] < from) return;
-      if (end - first === 1) { visit(this.notes[first]); return; }
-      const middle = (first + end) >>> 1;
-      walk(node * 2, first, middle);
-      walk(node * 2 + 1, middle, end);
-    };
-    if (last) walk(1, 0, this.size);
-  }
-}
-
 /** A deterministic, resolution-independent Canvas2D piano and effects renderer.
  * The same render path powers the preview, screenshots and video recordings.
  * No user media leaves the browser. */
@@ -63,10 +35,21 @@ export class PianoRenderer {
     this.layoutKey = '';
     this.colors = new Map();
     this.colorKey = '';
+    this.notePaints = new Map();
+    this.notePaintKey = '';
+    this.noteShadows = new NoteShadowCache((width, height) => this.createLayer(width, height));
+    this.particleSeeds = new Map();
+    this.backgroundLayer = null;
+    this.radianceLayer = null;
+    this.keyboardLayer = null;
+    this.saberProfile = null;
     this.effectEpoch = -Infinity;
     this.noteIndex = null;
-    this.indexedNotes = null;
-    this.indexedLength = 0;
+    this.visibleNotes = [];
+    this.reactiveNotes = [];
+    this.reactiveRing = [];
+    this.activeNotes = new Map();
+    this.liveColumns = new WeakMap();
   }
 
   resize(width, height) {
@@ -87,19 +70,32 @@ export class PianoRenderer {
 
   noteColor(midi, track, settings) {
     const signature = `${settings.colorMode}:${settings.colorA}:${settings.colorB}`;
-    if (signature !== this.colorKey) { this.colorKey = signature; this.colors.clear(); }
-    const key = `${midi}:${track}`;
-    if (!this.colors.has(key)) {
-      const a = rgb(settings.colorA);
-      const b = rgb(settings.colorB);
-      let color;
+    if (signature !== this.colorKey) {
+      this.colorKey = signature; this.colors.clear();
+      this.paletteA = rgb(settings.colorA); this.paletteB = rgb(settings.colorB);
+    }
+    // Track colors only depend on parity; the other modes ignore the track.
+    const key = midi * 2 + (settings.colorMode === 'track' && track % 2 ? 1 : 0);
+    let color = this.colors.get(key);
+    if (!color) {
+      const a = this.paletteA;
+      const b = this.paletteB;
       if (settings.colorMode === 'rainbow') color = rainbow((midi - 36) * 7 + 160);
       else if (settings.colorMode === 'track') color = track % 2 ? b : a;
       else if (settings.colorMode === 'single') color = a;
       else color = mix(a, b, clamp((midi - 42) / 44, 0, 1));
       this.colors.set(key, color);
     }
-    return this.colors.get(key);
+    return color;
+  }
+
+  createLayer(width, height, opaque = false) {
+    const canvas = this.canvas.ownerDocument?.createElement('canvas')
+      || (typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(width, height) : null);
+    if (!canvas) return null;
+    canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext('2d', { alpha: !opaque });
+    return ctx ? { canvas, ctx, key: '', opaque } : null;
   }
 
   layout(settings, width) {
@@ -124,7 +120,17 @@ export class PianoRenderer {
     this.keyWidth = unit;
   }
 
-  render({ song, time, dt = 0, settings, liveNotes = [], background = null, playing = false }) {
+  _collectNote(note) {
+    if (!this.keys.has(note.midi)) return;
+    const end = note.time + note.duration;
+    if (end >= this.queryTime) this.visibleNotes.push(note);
+    if (note.time <= this.queryTime) {
+      if (this.queryEffects && end > this.queryTime - 2) this.reactiveRing[this.reactiveCount++ % 36] = note;
+      if (end > this.queryTime) this.activeNotes.set(note.midi, note);
+    }
+  }
+
+  render({ song, time, dt = 0, settings, liveNotes = EMPTY_NOTES, background = null, playing = false }) {
     const c = this.ctx;
     if (!c) return;
     const width = this.canvas.width;
@@ -138,36 +144,36 @@ export class PianoRenderer {
     c.globalAlpha = 1;
     c.globalCompositeOperation = 'source-over';
     c.shadowBlur = 0;
-    c.fillStyle = settings.background;
-    c.fillRect(0, 0, width, height);
     this.drawBackground(background, settings, width, height, strike, scale);
 
-    const notes = song?.notes || [];
-    const visible = [];
-    const reactive = [];
-    const active = new Map();
-    if (this.indexedNotes !== notes || this.indexedLength !== notes.length) {
-      this.noteIndex = new NoteWindowIndex(notes);
-      this.indexedNotes = notes;
-      this.indexedLength = notes.length;
-    }
-    this.noteIndex.forEach(time - 2, time + settings.fallTime, (note) => {
-      if (!this.keys.has(note.midi)) return;
-      const end = note.time + note.duration;
-      if (end >= time && note.time <= time + settings.fallTime) visible.push(note);
-      if (note.time <= time && end > time - 2) reactive.push(note);
-      if (note.time <= time && end > time) active.set(note.midi, note);
-    });
+    const notes = song?.notes || EMPTY_NOTES;
+    const visible = this.visibleNotes, reactive = this.reactiveNotes, active = this.activeNotes;
+    visible.length = 0; reactive.length = 0; active.clear();
+    this.reactiveCount = 0;
+    this.queryTime = time;
+    this.queryEffects = settings.trails || (settings.particles && settings.particleAmount > 0);
+    this.noteIndex = getNoteIndex(notes);
+    this.noteIndex.forEach(time - (this.queryEffects ? 2 : 0), time + settings.fallTime, this._collectNote, this);
     for (const note of liveNotes) {
       if (!this.keys.has(note.midi)) continue;
       const end = note.time + note.duration;
-      if (end > time - 2) reactive.push(note);
+      if (this.queryEffects && end > time - 2) this.reactiveRing[this.reactiveCount++ % 36] = note;
       if (end > time) {
         active.set(note.midi, note);
         // Live keys leave a growing column above the strike line.
-        visible.push({ ...note, time: time - 0.02, duration: Math.min(2.5, Math.max(0.12, time - note.time)) });
+        let column = this.liveColumns.get(note);
+        if (!column) { column = { ...note }; this.liveColumns.set(note, column); }
+        column.time = time - 0.02;
+        column.duration = Math.min(2.5, Math.max(0.12, time - note.time));
+        visible.push(column);
       }
     }
+    // Both effects use only the newest sources (30 ribbons / 36 particles).
+    // Keep a small ring while querying, then restore their original draw order.
+    const sourceCount = Math.min(36, this.reactiveCount);
+    const sourceStart = this.reactiveCount > 36 ? this.reactiveCount % 36 : 0;
+    for (let i = 0; i < sourceCount; i++) reactive.push(this.reactiveRing[(sourceStart + i) % 36]);
+    if (this.reactiveCount < 36) this.reactiveRing.length = this.reactiveCount;
 
     c.save();
     c.beginPath(); c.rect(0, 0, width, strike); c.clip();
@@ -185,16 +191,53 @@ export class PianoRenderer {
 
   drawBackground(background, settings, width, height, strike, scale) {
     const c = this.ctx;
-    if (background) {
-      const sourceWidth = background.videoWidth || background.naturalWidth || background.width;
-      const sourceHeight = background.videoHeight || background.naturalHeight || background.height;
-      if (sourceWidth > 0 && sourceHeight > 0) {
-        const ratio = Math.max(width / sourceWidth, height / sourceHeight);
-        try { c.drawImage(background, (width - sourceWidth * ratio) / 2, (height - sourceHeight * ratio) / 2, sourceWidth * ratio, sourceHeight * ratio); } catch { /* Video may be between decoded frames. */ }
-        c.fillStyle = `rgba(0,0,0,${settings.backgroundDim / 100})`;
-        c.fillRect(0, 0, width, height);
-      }
-    } else {
+    // The opaque keyboard completely covers pixels below its first raster row.
+    // Keep that one boundary row for fractional strike coordinates.
+    const paintHeight = settings.keyboard ? Math.ceil(strike) : height;
+    const sourceWidth = background && (background.videoWidth || background.naturalWidth || background.width);
+    const sourceHeight = background && (background.videoHeight || background.naturalHeight || background.height);
+    const hasMedia = sourceWidth > 0 && sourceHeight > 0;
+    const dynamic = !!background && !(background.naturalWidth > 0 && background.naturalHeight > 0);
+    const opaque = !dynamic;
+    const signature = `${width}:${height}:${strike}:${this.layoutKey}:${settings.grid}:${!!background}:${hasMedia}:${settings.background}:${settings.backgroundDim}:${settings.colorA}:${settings.colorB}:${opaque ? `${sourceWidth}:${sourceHeight}:${background?.currentSrc || background?.src || ''}` : ''}`;
+    let layer = this.backgroundLayer;
+    if (!layer || layer.canvas.width !== width || layer.canvas.height !== paintHeight || layer.opaque !== opaque) {
+      layer = this.backgroundLayer = this.createLayer(width, paintHeight, opaque);
+    }
+    if (dynamic || !layer) {
+      c.fillStyle = settings.background; c.fillRect(0, 0, width, paintHeight);
+      if (hasMedia) this.paintMedia(c, background, sourceWidth, sourceHeight, width, height, paintHeight);
+    }
+    if (!layer) {
+      if (hasMedia) { c.fillStyle = `rgba(0,0,0,${settings.backgroundDim / 100})`; c.fillRect(0, 0, width, paintHeight); }
+      this.paintBackground(c, !!background, settings, width, height, strike, scale);
+      return;
+    }
+    if (layer.key !== signature || (opaque && layer.background !== background)) {
+      const target = layer.ctx;
+      if (opaque) {
+        target.fillStyle = settings.background; target.fillRect(0, 0, width, paintHeight);
+        if (hasMedia) this.paintMedia(target, background, sourceWidth, sourceHeight, width, height, paintHeight);
+      } else target.clearRect(0, 0, width, paintHeight);
+      if (hasMedia) { target.fillStyle = `rgba(0,0,0,${settings.backgroundDim / 100})`; target.fillRect(0, 0, width, paintHeight); }
+      this.paintBackground(target, !!background, settings, width, height, strike, scale);
+      layer.key = signature;
+      layer.background = opaque ? background : null;
+    }
+    c.drawImage(layer.canvas, 0, 0);
+  }
+
+  paintMedia(c, background, sourceWidth, sourceHeight, width, height, paintHeight) {
+    const ratio = Math.max(width / sourceWidth, height / sourceHeight);
+    const sourceX = (sourceWidth - width / ratio) / 2;
+    const sourceY = (sourceHeight - height / ratio) / 2;
+    try {
+      c.drawImage(background, sourceX, sourceY, width / ratio, paintHeight / ratio, 0, 0, width, paintHeight);
+    } catch { /* Video may be between decoded frames. */ }
+  }
+
+  paintBackground(c, hasBackground, settings, width, height, strike, scale) {
+    if (!hasBackground) {
       const aura = c.createRadialGradient(width * 0.5, strike, 0, width * 0.5, strike, width * 0.6);
       aura.addColorStop(0, rgba(rgb(settings.colorA), 0.027));
       aura.addColorStop(0.6, rgba(rgb(settings.colorB), 0.012));
@@ -226,11 +269,16 @@ export class PianoRenderer {
   drawNotes(notes, time, speed, strike, scale, settings) {
     const c = this.ctx;
     const glow = settings.glow / 100;
+    const signature = `${this.layoutKey}:${settings.colorMode}:${settings.colorA}:${settings.colorB}:${settings.noteStyle}:${glow}`;
+    if (signature !== this.notePaintKey) {
+      this.notePaintKey = signature; this.notePaints.clear(); this.noteShadows.clear();
+    }
     for (const note of notes) {
       const key = this.keys.get(note.midi);
       const color = this.noteColor(note.midi, note.track || 0, settings);
       const bottom = strike - (note.time - time) * speed;
-      const top = bottom - Math.max(7 * scale, note.duration * speed);
+      const naturalHeight = Math.max(7 * scale, note.duration * speed);
+      const top = bottom - naturalHeight;
       const y = Math.max(-15 * scale, top);
       const h = Math.min(strike + 3 * scale, bottom) - y;
       if (h <= 0) continue;
@@ -239,16 +287,37 @@ export class PianoRenderer {
       const radius = Math.min(6 * scale, w * 0.28);
       const nearTop = clamp((bottom + 30 * scale) / (strike * 0.3), 0.12, 1);
       c.globalAlpha = nearTop;
-      c.shadowColor = rgba(color, 0.95); c.shadowBlur = glow * 23 * scale;
-      const fill = c.createLinearGradient(x, y, x + w, y);
-      if (settings.noteStyle === 'solid') {
-        fill.addColorStop(0, rgba(color, 0.8)); fill.addColorStop(0.45, rgba(mix(color, [255,255,255], 0.32), 0.94)); fill.addColorStop(1, rgba(color, 0.7));
-      } else {
-        fill.addColorStop(0, rgba(color, 0.38)); fill.addColorStop(0.2, rgba(color, settings.noteStyle === 'outline' ? 0.025 : 0.13)); fill.addColorStop(0.75, rgba(color, settings.noteStyle === 'outline' ? 0.02 : 0.22)); fill.addColorStop(1, rgba(color, 0.48));
+      const paintKey = note.midi * 2 + (settings.colorMode === 'track' && note.track % 2 ? 1 : 0);
+      let paint = this.notePaints.get(paintKey);
+      if (!paint) {
+        // The fill is horizontal, so its coordinates do not change as notes fall.
+        const fill = c.createLinearGradient(x, 0, x + w, 0);
+        let stops;
+        if (settings.noteStyle === 'solid') {
+          stops = [[0, rgba(color, 0.8)], [0.45, rgba(mix(color, [255,255,255], 0.32), 0.94)], [1, rgba(color, 0.7)]];
+        } else {
+          stops = [[0, rgba(color, 0.38)], [0.2, rgba(color, settings.noteStyle === 'outline' ? 0.025 : 0.13)], [0.75, rgba(color, settings.noteStyle === 'outline' ? 0.02 : 0.22)], [1, rgba(color, 0.48)]];
+        }
+        for (const [offset, stop] of stops) fill.addColorStop(offset, stop);
+        paint = { fill, stops, shadow: rgba(color, 0.95), glow: rgba(color, 0.38 * glow), edge: rgba(mix(color, [255,255,255], 0.3), 0.98) };
+        this.notePaints.set(paintKey, paint);
       }
-      rounded(c, x, y, w, h, radius); c.fillStyle = fill; c.fill();
-      c.strokeStyle = rgba(color, 0.38 * glow); c.lineWidth = Math.max(1.5, 4 * scale); c.stroke();
-      c.strokeStyle = rgba(mix(color, [255,255,255], 0.3), 0.98); c.lineWidth = Math.max(1, 1.7 * scale); c.stroke();
+      const wideStroke = Math.max(1.5, 4 * scale), edgeStroke = Math.max(1, 1.7 * scale);
+      // Clipped and growing live columns keep the direct path: their silhouette
+      // changes each frame, so caching them would churn GPU textures.
+      const sprite = glow > 0 && y === top && note.time >= time
+        ? this.noteShadows.get(`${paintKey}:${Math.round(naturalHeight * 1e6)}`, {
+          x, width: w, height: naturalHeight, radius, blur: glow * 23 * scale,
+          shadow: paint.shadow, stops: paint.stops,
+          strokes: [{ color: paint.glow, width: wideStroke }, { color: paint.edge, width: edgeStroke }],
+        }) : null;
+      c.shadowColor = paint.shadow; c.shadowBlur = sprite ? 0 : glow * 23 * scale;
+      if (sprite) this.noteShadows.draw(c, sprite, 0, x, y);
+      rounded(c, x, y, w, h, radius); c.fillStyle = paint.fill; c.fill();
+      if (sprite) this.noteShadows.draw(c, sprite, 1, x, y);
+      c.strokeStyle = paint.glow; c.lineWidth = wideStroke; c.stroke();
+      if (sprite) this.noteShadows.draw(c, sprite, 2, x, y);
+      c.strokeStyle = paint.edge; c.lineWidth = edgeStroke; c.stroke();
       c.shadowBlur = 0;
       if (settings.noteStyle === 'glass' && h > 9 * scale) {
         rounded(c, x + 2 * scale, y + 2 * scale, w - 4 * scale, h - 4 * scale, radius * 0.7);
@@ -271,8 +340,38 @@ export class PianoRenderer {
   }
 
   drawRadiance(active, strike, height, scale, settings) {
-    if (settings.glow <= 0) return;
-    const c = this.ctx;
+    if (settings.glow <= 0 || !active.size) return;
+    const width = this.canvas.width;
+    const top = Math.max(0, Math.floor(strike - Math.max(height * 0.3, 30 * scale, this.keyWidth * 2.6)));
+    const layerHeight = Math.ceil(strike) - top;
+    let signature = `${this.layoutKey}:${strike}:${height}:${settings.glow}:${settings.colorMode}:${settings.colorA}:${settings.colorB}`;
+    let left = width, right = 0;
+    for (const [midi, note] of active) {
+      signature += `:${midi},${settings.colorMode === 'track' && note.track % 2 ? 1 : 0}`;
+      const key = this.keys.get(midi), radius = Math.max(30 * scale, key.w * 2.6);
+      left = Math.min(left, Math.floor(key.center - radius));
+      right = Math.max(right, Math.ceil(key.center + radius));
+    }
+    left = Math.max(0, left); right = Math.min(width, right);
+    let layer = this.radianceLayer;
+    if (!layer || layer.canvas.width !== width || layer.canvas.height !== layerHeight) {
+      layer = this.radianceLayer = this.createLayer(width, layerHeight);
+    }
+    if (!layer) { this.paintRadiance(this.ctx, active, strike, height, scale, settings); return; }
+    if (layer.key !== signature) {
+      const c = layer.ctx;
+      c.clearRect(0, 0, width, layerHeight);
+      c.save(); c.translate(0, -top);
+      this.paintRadiance(c, active, strike, height, scale, settings);
+      c.restore();
+      layer.key = signature;
+    }
+    this.ctx.globalCompositeOperation = 'lighter';
+    this.ctx.drawImage(layer.canvas, left, 0, right - left, layerHeight, left, top, right - left, layerHeight);
+    this.ctx.globalCompositeOperation = 'source-over';
+  }
+
+  paintRadiance(c, active, strike, height, scale, settings) {
     c.globalCompositeOperation = 'lighter';
     for (const [midi, note] of active) {
       const key = this.keys.get(midi);
@@ -290,10 +389,23 @@ export class PianoRenderer {
   }
 
   drawRibbons(notes, time, strike, height, scale, settings) {
+    if (!notes.length) return;
     const c = this.ctx;
     c.globalCompositeOperation = 'lighter';
     const turbulence = settings.turbulence / 100;
-    for (const note of notes.slice(-30)) {
+    const glow = settings.glow / 100;
+    // Blur the combined glow once at half resolution. The crisp ribbons still
+    // use the full-resolution paths; broad shadows do not need full-size masks.
+    const bloom = glow > 0 && 'filter' in c ? this.ribbonBloom(strike, height, scale, glow) : null;
+    const g = bloom?.source.ctx;
+    if (g) {
+      g.clearRect(0, 0, bloom.source.canvas.width, bloom.source.canvas.height);
+      g.save(); g.scale(.5, .5); g.translate(bloom.padding, -bloom.top);
+      g.globalCompositeOperation = 'lighter'; g.globalAlpha = .8 * glow;
+    }
+    let strokes = 0;
+    for (let i = Math.max(0, notes.length - 30); i < notes.length; i++) {
+      const note = notes[i];
       const end = note.time + note.duration;
       const fade = clamp(1 - Math.max(0, time - end) / 0.9, 0, 1);
       if (!fade || time < note.time) continue;
@@ -303,8 +415,14 @@ export class PianoRenderer {
       const gradient = c.createLinearGradient(0, strike, 0, strike - extent);
       gradient.addColorStop(0, rgba(color, 0.16 * fade)); gradient.addColorStop(0.2, rgba(color, 0.65 * fade));
       gradient.addColorStop(0.7, rgba(color, 0.38 * fade)); gradient.addColorStop(1, rgba(color, 0));
+      let glowGradient;
+      if (g) {
+        glowGradient = g.createLinearGradient(0, strike, 0, strike - extent);
+        glowGradient.addColorStop(0, rgba(color, .16 * fade)); glowGradient.addColorStop(.2, rgba(color, .65 * fade));
+        glowGradient.addColorStop(.7, rgba(color, .38 * fade)); glowGradient.addColorStop(1, rgba(color, 0));
+      }
       for (let strand = 0; strand < 3; strand++) {
-        c.beginPath();
+        c.beginPath(); if (g) g.beginPath();
         for (let j = 0; j <= 45; j++) {
           const progress = j / 45;
           const curl = Math.sin(progress * 10.5 - time * 1.7 + note.midi * 0.7 + strand * 1.7);
@@ -312,52 +430,138 @@ export class PianoRenderer {
           const x = key.center + (curl * (0.2 + progress) + bend * 1.4) * this.keyWidth * (0.5 + turbulence * 2) * progress;
           const y = strike - progress * extent;
           if (!j) c.moveTo(x, y); else c.lineTo(x, y);
+          if (g) { if (!j) g.moveTo(x, y); else g.lineTo(x, y); }
         }
         c.strokeStyle = gradient; c.lineWidth = (strand ? 1.25 : 3.5) * scale;
-        c.shadowColor = rgba(color, 0.8 * settings.glow / 100); c.shadowBlur = 12 * scale * settings.glow / 100;
+        c.shadowColor = rgba(color, .8 * glow); c.shadowBlur = g ? 0 : 12 * scale * glow;
         c.stroke();
+        if (g) { g.strokeStyle = glowGradient; g.lineWidth = c.lineWidth; g.stroke(); }
+        strokes++;
+      }
+    }
+    if (g) {
+      g.restore();
+      if (strokes) {
+        const blurred = bloom.blurred.ctx;
+        blurred.clearRect(0, 0, bloom.blurred.canvas.width, bloom.blurred.canvas.height);
+        blurred.filter = `blur(${3 * scale * glow}px)`;
+        blurred.drawImage(bloom.source.canvas, 0, 0);
+        blurred.filter = 'none';
+        c.drawImage(bloom.blurred.canvas, -bloom.padding, bloom.top, bloom.blurred.canvas.width * 2, bloom.blurred.canvas.height * 2);
       }
     }
     c.shadowBlur = 0; c.globalCompositeOperation = 'source-over';
   }
 
+  ribbonBloom(strike, height, scale, glow) {
+    const padding = Math.ceil(18 * scale * glow + 4 * scale);
+    const top = Math.floor(strike - height * .53 - padding);
+    const width = Math.ceil((this.canvas.width + padding * 2) / 2);
+    const layerHeight = Math.ceil((strike - top + padding) / 2);
+    let layer = this.ribbonLayer;
+    if (!layer) {
+      const source = this.createLayer(width, layerHeight), blurred = this.createLayer(width, layerHeight);
+      if (!source || !blurred || !('filter' in blurred.ctx)) return null;
+      layer = this.ribbonLayer = { source, blurred };
+    }
+    for (const surface of [layer.source, layer.blurred]) {
+      if (surface.canvas.width !== width) surface.canvas.width = width;
+      if (surface.canvas.height !== layerHeight) surface.canvas.height = layerHeight;
+    }
+    layer.padding = padding; layer.top = top;
+    return layer;
+  }
+
   drawParticles(notes, time, strike, height, scale, settings) {
     const c = this.ctx;
-    const sources = notes.slice(-36);
-    const perNote = Math.min(Math.floor(1800 / Math.max(1, sources.length)), Math.round(25 + settings.particleAmount * 2.7));
+    const sourceCount = Math.min(36, notes.length);
+    const perNote = Math.min(Math.floor(1800 / Math.max(1, sourceCount)), Math.round(25 + settings.particleAmount * 2.7));
     const turbulence = settings.turbulence / 100;
     const rise = height * (0.2 + settings.particleSpeed * 0.004);
     c.globalCompositeOperation = 'lighter';
-    for (const note of sources) {
+    for (let source = notes.length - sourceCount; source < notes.length; source++) {
+      const note = notes[source];
       const key = this.keys.get(note.midi);
       const color = this.noteColor(note.midi, note.track || 0, settings);
-      const seed = note.midi * 31 + note.time * 17;
+      const particles = this.particleParameters(note, perNote);
+      const normal = rgba(color, 1);
+      const bright = rgba(mix(color, [255,255,255], 0.6), 1);
+      c.strokeStyle = normal;
       for (let i = 0; i < perNote; i++) {
-        const n = seed + i * 2.37;
-        const life = 0.7 + hash(n + 6) * 1.25;
-        const age = ((time - note.time + hash(n) * life) % life + life) % life;
+        const offset = i * 7;
+        const life = particles[offset];
+        const age = ((time - note.time + particles[offset + 1]) % life + life) % life;
         const emittedAt = time - age;
         if (emittedAt < note.time || emittedAt > note.time + note.duration) continue;
         const progress = age / life;
-        const spread = (hash(n + 2) - 0.5) * this.keyWidth * 0.75;
-        const drift = (hash(n + 3) - 0.5) * this.keyWidth * age * (1 + turbulence * 3.5);
+        const spread = particles[offset + 2] * this.keyWidth * 0.75;
+        const drift = particles[offset + 3] * this.keyWidth * age * (1 + turbulence * 3.5);
         const curl = Math.sin(age * 6.5 - time * 1.6 + note.midi * 0.7) * this.keyWidth * turbulence * age * 1.1;
         const x = key.center + spread + drift + curl;
-        const y = strike - age * rise * (0.55 + hash(n + 4) * 0.45);
-        const alpha = Math.pow(1 - progress, 1.2) * (0.4 + hash(n + 5) * 0.6) * Math.min(1, age * 12 + 0.6);
-        const size = (0.8 + hash(n + 7) * 1.7) * Math.max(0.8, scale);
-        c.fillStyle = rgba(i % 9 === 0 ? mix(color, [255,255,255], 0.6) : color, alpha);
+        const y = strike - age * rise * particles[offset + 4];
+        const alpha = Math.pow(1 - progress, 1.2) * particles[offset + 5] * Math.min(1, age * 12 + 0.6);
+        const size = particles[offset + 6] * Math.max(0.8, scale);
         if (i % 11 === 0) {
-          c.strokeStyle = rgba(color, alpha * 0.65); c.lineWidth = size * 0.6;
+          c.globalAlpha = alpha * 0.65; c.lineWidth = size * 0.6;
           c.beginPath(); c.moveTo(x, y); c.lineTo(x - drift * 0.04, y + (3 + age * 4) * scale); c.stroke();
-        } else c.fillRect(x, y, size, size);
+        } else {
+          c.globalAlpha = alpha;
+          c.fillStyle = i % 9 === 0 ? bright : normal;
+          c.fillRect(x, y, size, size);
+        }
       }
     }
+    c.globalAlpha = 1;
     c.globalCompositeOperation = 'source-over';
   }
 
+  particleParameters(note, count) {
+    const seed = note.midi * 31 + note.time * 17;
+    let entry = this.particleSeeds.get(note);
+    if (!entry || entry.seed !== seed || entry.values.length < count * 7) {
+      // Source counts fluctuate as notes end. Spare capacity avoids rebuilding
+      // every surviving source each time its particle allowance grows by one.
+      const capacity = Math.max(count, Math.min(295, entry ? entry.values.length / 7 * 2 : 64));
+      const values = new Float64Array(capacity * 7);
+      for (let i = 0; i < capacity; i++) {
+        const n = seed + i * 2.37, offset = i * 7;
+        const life = 0.7 + hash(n + 6) * 1.25;
+        values[offset] = life; values[offset + 1] = hash(n) * life;
+        values[offset + 2] = hash(n + 2) - 0.5; values[offset + 3] = hash(n + 3) - 0.5;
+        values[offset + 4] = 0.55 + hash(n + 4) * 0.45;
+        values[offset + 5] = 0.4 + hash(n + 5) * 0.6;
+        values[offset + 6] = 0.8 + hash(n + 7) * 1.7;
+      }
+      entry = { seed, values };
+      this.particleSeeds.set(note, entry);
+      // Retain only a small recent window, including when seeking a long song.
+      if (this.particleSeeds.size > 72) this.particleSeeds.delete(this.particleSeeds.keys().next().value);
+    }
+    return entry.values;
+  }
+
   drawKeyboard(active, strike, keyHeight, width, scale, settings) {
-    const c = this.ctx;
+    const top = Math.max(0, Math.floor(strike - 8 * scale - 1));
+    const height = this.canvas.height - top;
+    let signature = `${width}:${strike}:${keyHeight}:${this.layoutKey}:${settings.labels}:${settings.colorMode}:${settings.colorA}:${settings.colorB}`;
+    for (const [midi, note] of active) signature += `:${midi},${settings.colorMode === 'track' && note.track % 2 ? 1 : 0}`;
+    let layer = this.keyboardLayer;
+    if (!layer || layer.canvas.width !== width || layer.canvas.height !== height) {
+      layer = this.keyboardLayer = this.createLayer(width, height);
+    }
+    if (!layer) { this.paintKeyboard(this.ctx, active, strike, keyHeight, width, scale, settings); return; }
+    if (layer.key !== signature) {
+      const c = layer.ctx;
+      c.clearRect(0, 0, width, height);
+      c.save(); c.translate(0, -top);
+      this.paintKeyboard(c, active, strike, keyHeight, width, scale, settings);
+      c.restore();
+      layer.key = signature;
+    }
+    this.ctx.drawImage(layer.canvas, 0, top);
+  }
+
+  paintKeyboard(c, active, strike, keyHeight, width, scale, settings) {
     c.fillStyle = '#080a0e'; c.fillRect(0, strike, width, keyHeight);
     for (const [midi, key] of this.keys) {
       if (key.black) continue;
@@ -402,21 +606,36 @@ export class PianoRenderer {
 
   drawSaber(active, time, strike, width, scale, settings) {
     const c = this.ctx;
-    const gradient = c.createLinearGradient(0, 0, width, 0);
-    if (settings.colorMode === 'rainbow') {
-      for (let i = 0; i <= 6; i++) gradient.addColorStop(i / 6, rgba(rainbow(160 + i * 40), 0.7));
-    } else {
-      gradient.addColorStop(0, rgba(rgb(settings.colorA), 0.55)); gradient.addColorStop(1, rgba(rgb(settings.colorMode === 'single' ? settings.colorA : settings.colorB), 0.55));
+    const colorKey = `${width}:${settings.colorMode}:${settings.colorA}:${settings.colorB}`;
+    if (this.saberColorKey !== colorKey) {
+      this.saberColorKey = colorKey;
+      const gradient = c.createLinearGradient(0, 0, width, 0);
+      if (settings.colorMode === 'rainbow') {
+        for (let i = 0; i <= 6; i++) gradient.addColorStop(i / 6, rgba(rainbow(160 + i * 40), 0.7));
+      } else {
+        gradient.addColorStop(0, rgba(rgb(settings.colorA), 0.55)); gradient.addColorStop(1, rgba(rgb(settings.colorMode === 'single' ? settings.colorA : settings.colorB), 0.55));
+      }
+      this.saberGradient = gradient;
+    }
+    let profileKey = this.layoutKey;
+    for (const midi of active.keys()) profileKey += `:${midi}`;
+    if (this.saberProfile?.key !== profileKey) {
+      const points = [];
+      const step = Math.max(3, 5 * scale);
+      for (let x = 0; x <= width + step; x += step) {
+        let amp = 0.55;
+        for (const midi of active.keys()) amp += 2.4 * Math.exp(-Math.pow((x - this.keys.get(midi).center) / (26 * scale), 2));
+        points.push(x, amp);
+      }
+      this.saberProfile = { key: profileKey, points };
     }
     c.save(); c.globalCompositeOperation = 'lighter';
     c.shadowBlur = settings.glow * 0.28 * scale; c.shadowColor = settings.colorA;
-    c.strokeStyle = gradient; c.lineWidth = Math.max(1, 2 * scale);
+    c.strokeStyle = this.saberGradient; c.lineWidth = Math.max(1, 2 * scale);
     c.beginPath();
-    const activeKeys = [...active.keys()].map((midi) => this.keys.get(midi).center);
-    const step = Math.max(3, 5 * scale);
-    for (let x = 0; x <= width + step; x += step) {
-      let amp = 0.55;
-      for (const center of activeKeys) amp += 2.4 * Math.exp(-Math.pow((x - center) / (26 * scale), 2));
+    const points = this.saberProfile.points;
+    for (let i = 0; i < points.length; i += 2) {
+      const x = points[i], amp = points[i + 1];
       const y = strike - 1 * scale - (Math.sin(x / (17 * scale) + time * 3) + Math.sin(x / (7 * scale) - time * 4) * 0.3) * amp * scale;
       if (x === 0) c.moveTo(x, y); else c.lineTo(x, y);
     }

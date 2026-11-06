@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { NoteWindowIndex } from '../src/renderer.js';
+import { NoteWindowIndex, PianoRenderer } from '../src/renderer.js';
+import { getNoteIndex } from '../src/note-index.js';
+import { DEFAULT_SETTINGS } from '../src/model.js';
 
 function query(index, from, to) {
   const notes = [];
@@ -46,4 +48,70 @@ test('late playback prunes expired history even with an opening note still held'
   assert.equal(result[0], notes[0], 'long opening sustain remains visible');
   assert.ok(result.length >= 10 && result.length <= 12);
   assert.ok(inspectedNodes < 150, `expected bounded tree traversal, inspected ${inspectedNodes} nodes`);
+});
+
+test('shared note indexes invalidate when the note collection changes', () => {
+  const notes = [{ time: 1, duration: 2 }, { time: 1, duration: 1 }, { time: 4, duration: 1 }];
+  const original = getNoteIndex(notes);
+  assert.equal(getNoteIndex(notes), original);
+  assert.equal(original.lowerBound(0), 0);
+  assert.equal(original.lowerBound(1), 0);
+  assert.equal(original.lowerBound(1.001), 2);
+  assert.equal(original.lowerBound(5), 3);
+  assert.notEqual(getNoteIndex([...notes]), original);
+  notes.push({ time: 6, duration: 1 });
+  const appended = getNoteIndex(notes);
+  assert.notEqual(appended, original);
+  assert.deepEqual(query(appended, 6, 7), [notes[3]]);
+  notes.length = 1;
+  assert.deepEqual(query(getNoteIndex(notes), 0, 7), notes);
+});
+
+function collectionRenderer() {
+  const noop = () => {};
+  const ctx = { fillRect: noop, save: noop, restore: noop, beginPath: noop, rect: noop, clip: noop };
+  const renderer = new PianoRenderer({ width: 1440, height: 810, getContext: () => ctx });
+  for (const method of ['drawBackground', 'drawNotes', 'drawRadiance', 'drawRibbons', 'drawParticles', 'drawKeyboard', 'drawSaber']) renderer[method] = noop;
+  return renderer;
+}
+
+test('dense render windows preserve note layering and effect source order across seeks', () => {
+  const notes = Array.from({ length: 2000 }, (_, i) => ({
+    time: i * 0.015, duration: i % 37 === 0 ? 40 : 0.4, midi: 15 + i % 105, track: i % 2,
+  }));
+  const song = { notes };
+  const renderer = collectionRenderer();
+  const settings = { ...DEFAULT_SETTINGS };
+  for (const time of [12, 4, 0, 29, 8, 50]) {
+    renderer.render({ song, time, settings });
+    const inRange = note => note.midi >= settings.minNote && note.midi <= settings.maxNote;
+    const visible = notes.filter(note => inRange(note) && note.time <= time + settings.fallTime && note.time + note.duration >= time);
+    const reactive = notes.filter(note => inRange(note) && note.time <= time && note.time + note.duration > time - 2);
+    const active = new Map(notes.filter(note => inRange(note) && note.time <= time && note.time + note.duration > time).map(note => [note.midi, note]));
+    assert.deepEqual(renderer.visibleNotes, visible);
+    assert.deepEqual(renderer.reactiveNotes, reactive.slice(-36));
+    assert.deepEqual(renderer.activeNotes, active);
+  }
+  renderer.render({ song, time: 12, settings: { ...settings, trails: false, particles: false } });
+  assert.deepEqual(renderer.reactiveNotes, []);
+  assert.equal(renderer.noteIndex, getNoteIndex(notes));
+});
+
+test('live columns keep growing while live effects remain after song sources', () => {
+  const notes = Array.from({ length: 80 }, (_, i) => ({ time: i * 0.01, duration: 3, midi: 60, track: 0 }));
+  const live = { time: 0.8, duration: 36000, midi: 60, track: 1, velocity: 0.7 };
+  const renderer = collectionRenderer();
+  for (const time of [1, 1.5, 4]) {
+    renderer.render({ song: { notes }, time, settings: DEFAULT_SETTINGS, liveNotes: [live] });
+    const column = renderer.visibleNotes.at(-1);
+    assert.equal(column.time, time - 0.02);
+    assert.equal(column.duration, Math.min(2.5, time - live.time));
+    assert.equal(renderer.activeNotes.get(60), live);
+    const expected = [...notes.filter(note => note.time + note.duration > time - 2), live].slice(-36);
+    assert.deepEqual(renderer.reactiveNotes, expected);
+  }
+  renderer.render({ song: { notes: [] }, time: 5, settings: DEFAULT_SETTINGS });
+  assert.deepEqual(renderer.visibleNotes, []);
+  assert.deepEqual(renderer.reactiveNotes, []);
+  assert.equal(renderer.activeNotes.size, 0);
 });

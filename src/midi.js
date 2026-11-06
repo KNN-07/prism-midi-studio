@@ -67,7 +67,7 @@ export function parseMidi(buffer, filename = 'Untitled performance') {
         need(size, end);
         const a = bytes[pos++], b = size === 2 ? bytes[pos++] : 0;
         if (a > 127 || b > 127) throw new Error('This MIDI file contains invalid channel data.');
-        if (type === 8 || type === 9 || type === 11) events.push({ tick, type, channel, a, b, track, order });
+        if (type === 8 || type === 9 || (type === 11 && (a === 64 || a === 120 || a === 121 || a === 123))) events.push({ tick, type, channel, a, b, track, order });
       } else throw new Error('This MIDI file contains an unsupported system event.');
     }
   }
@@ -79,15 +79,18 @@ export function parseMidi(buffer, filename = 'Untitled performance') {
     if (last.tick === event.tick) last.micros = event.micros;
     else tempoMap.push({ tick: event.tick, micros: event.micros, time: last.time + (event.tick - last.tick) * last.micros / ppq / 1e6 });
   }
+  // Channel events are processed in tick order. Store each note's start time
+  // once, then advance through the tempo map instead of searching it twice
+  // for every note (including every note released by the sustain pedal).
+  let tempoIndex = 0;
   const seconds = (tick) => {
-    let lo = 0, hi = tempoMap.length - 1;
-    while (lo < hi) { const mid = Math.ceil((lo + hi) / 2); if (tempoMap[mid].tick <= tick) lo = mid; else hi = mid - 1; }
-    const tempo = tempoMap[lo];
+    while (tempoIndex + 1 < tempoMap.length && tempoMap[tempoIndex + 1].tick <= tick) tempoIndex++;
+    const tempo = tempoMap[tempoIndex];
     return tempo.time + (tick - tempo.tick) * tempo.micros / ppq / 1e6;
   };
   const active = new Map(), sustained = Array.from({ length: 16 }, () => []), pedal = Array(16).fill(false), notes = [];
   const finish = (note, tick) => {
-    const time = seconds(note.tick), end = seconds(Math.max(note.tick, tick));
+    const time = note.time, end = seconds(Math.max(note.tick, tick));
     notes.push({ midi: note.midi, time, duration: Math.max(0.001, end - time), velocity: note.velocity, track: note.track, channel: note.channel });
     tracks[note.track].count++;
   };
@@ -96,16 +99,23 @@ export function parseMidi(buffer, filename = 'Untitled performance') {
   for (const e of events) {
     const key = e.channel * 128 + e.a;
     if (e.type === 9 && e.b > 0) {
-      const queue = active.get(key) || [];
-      queue.push({ midi: e.a, tick: e.tick, velocity: e.b / 127, track: e.track, channel: e.channel }); active.set(key, queue);
+      const note = { midi: e.a, tick: e.tick, time: seconds(e.tick), velocity: e.b / 127, track: e.track, channel: e.channel, next: null };
+      const queue = active.get(key);
+      if (queue) { queue.tail.next = note; queue.tail = note; }
+      else active.set(key, { head: note, tail: note });
     } else if (e.type === 8 || e.type === 9) {
       const queue = active.get(key);
-      if (queue?.length) { const note = queue.shift(); if (pedal[e.channel]) sustained[e.channel].push(note); else finish(note, e.tick); if (!queue.length) active.delete(key); }
+      if (queue) {
+        const note = queue.head;
+        queue.head = note.next; note.next = null;
+        if (pedal[e.channel]) sustained[e.channel].push(note); else finish(note, e.tick);
+        if (!queue.head) active.delete(key);
+      }
     } else if (e.type === 11) {
       if (e.a === 64) { pedal[e.channel] = e.b >= 64; if (!pedal[e.channel]) releasePedal(e.channel, e.tick); }
       if (e.a === 120 || e.a === 123) {
         for (const [id, queue] of active) if (Math.floor(id / 128) === e.channel) {
-          for (const note of queue) { if (e.a === 123 && pedal[e.channel]) sustained[e.channel].push(note); else finish(note, e.tick); }
+          for (let note = queue.head; note; note = note.next) { if (e.a === 123 && pedal[e.channel]) sustained[e.channel].push(note); else finish(note, e.tick); }
           active.delete(id);
         }
         if (e.a === 120) releasePedal(e.channel, e.tick);
@@ -113,7 +123,7 @@ export function parseMidi(buffer, filename = 'Untitled performance') {
       if (e.a === 121) { pedal[e.channel] = false; releasePedal(e.channel, e.tick); }
     }
   }
-  for (const queue of active.values()) for (const note of queue) finish(note, Math.max(maxTick, note.tick + ppq / 4));
+  for (const queue of active.values()) for (let note = queue.head; note; note = note.next) finish(note, Math.max(maxTick, note.tick + ppq / 4));
   for (let channel = 0; channel < 16; channel++) releasePedal(channel, maxTick);
   notes.sort((a,b) => a.time - b.time || a.midi - b.midi || a.track - b.track);
   if (!notes.length) throw new Error('This MIDI file has no playable notes.');
@@ -158,15 +168,27 @@ export function encodeMidi(song) {
   const variable = n => { const out = [n & 127]; while ((n = Math.floor(n / 128))) out.unshift((n & 127) | 128); return out; };
   const text = str => [...new TextEncoder().encode(str)];
   const uint32 = n => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
-  const chunk = (tag, body) => [...text(tag), ...uint32(body.length), ...body];
-  const trackIds = [...new Set(song.notes.map(n => n.track || 0))].sort((a,b) => a - b);
+  const chunk = (tag, body) => {
+    const data = new Uint8Array(body.length + 8);
+    data.set(text(tag)); data.set(uint32(body.length), 4); data.set(body, 8);
+    return data;
+  };
+  // Group once: exporting many tracks must not rescan the complete song for
+  // each track. Typed chunks also avoid a second large number-array copy.
+  const trackNotes = new Map();
+  for (const note of song.notes) {
+    const id = note.track || 0;
+    if (!trackNotes.has(id)) trackNotes.set(id, []);
+    trackNotes.get(id).push(note);
+  }
+  const trackIds = [...trackNotes.keys()].sort((a,b) => a - b);
   const count = trackIds.length + 1;
-  const output = chunk('MThd', [0,1,count >> 8,count & 255,ppq >> 8,ppq & 255]);
-  output.push(...chunk('MTrk', [0,255,81,3,micros >> 16 & 255,micros >> 8 & 255,micros & 255,0,255,47,0]));
+  const chunks = [chunk('MThd', [0,1,count >> 8,count & 255,ppq >> 8,ppq & 255]),
+    chunk('MTrk', [0,255,81,3,micros >> 16 & 255,micros >> 8 & 255,micros & 255,0,255,47,0])];
   for (const id of trackIds) {
     const name = text(song.tracks?.[id]?.name || `Track ${id + 1}`), body = [0,255,3,...variable(name.length),...name];
     const events = [];
-    for (const n of song.notes) if ((n.track || 0) === id) {
+    for (const n of trackNotes.get(id)) {
       const midi = Math.min(127, Math.max(0, Math.round(n.midi))), channel = (n.channel ?? id) % 16;
       const start = toTick(n.time), end = Math.max(start + 1, toTick(n.time + n.duration));
       events.push({ tick: start, on: true, data: [0x90 | channel,midi,Math.max(1, Math.min(127, Math.round(n.velocity * 127)))] });
@@ -176,7 +198,10 @@ export function encodeMidi(song) {
     let last = 0;
     for (const event of events) { body.push(...variable(event.tick - last), ...event.data); last = event.tick; }
     body.push(...variable(Math.max(last, toTick(song.duration || 0)) - last),255,47,0);
-    const data = chunk('MTrk', body); for (const byte of data) output.push(byte);
+    chunks.push(chunk('MTrk', body));
   }
-  return new Uint8Array(output);
+  const output = new Uint8Array(chunks.reduce((length, data) => length + data.length, 0));
+  let offset = 0;
+  for (const data of chunks) { output.set(data, offset); offset += data.length; }
+  return output;
 }

@@ -3,6 +3,8 @@ import { createDemoSong, parseMidi, encodeMidi } from './midi.js';
 import { PianoAudio } from './audio.js';
 import { PianoRenderer } from './renderer.js';
 import { LiveMidi } from './live-midi.js';
+import { FrameLoop, FrameCadence } from './frame-loop.js';
+import { previewProfile, previewSize } from './preview.js';
 
 const paths = {
   prism: '<path d="M12 2 23 22H1Z"/><path d="m12 2 4 20M1 22l14-11"/>',
@@ -41,8 +43,10 @@ let time = Math.min(8.5, song.duration / 3), playing = false, loop = false, spee
 let background = null, backgroundUrl = null, backgroundOffset = 0;
 let liveMode = false, midiAccess = null, midiInput = null, liveStarted = 0;
 const liveNotes = new Map(), computerHeld = new Map();
-const live = new LiveMidi(audio, { onStart: beginLive, getTime: () => performance.now()/1000-liveStarted, onError: () => toast('Your browser could not start audio.',true) }, liveNotes);
-let recording = null, preparingRecording = false, lastFrame = performance.now(), toastTimer, dragDepth = 0;
+const liveSong = { notes: [] };
+let liveSnapshot = [], liveSnapshotDirty = false;
+const live = new LiveMidi(audio, { onStart: beginLive, getTime: () => performance.now()/1000-liveStarted, onChange: () => { liveSnapshotDirty = true; requestFrame(); }, onError: () => toast('Your browser could not start audio.',true) }, liveNotes);
+let recording = null, preparingRecording = false, toastTimer, dragDepth = 0, settingsTimer;
 let renderedVideo = null;
 
 function slider(key, label, min, max, step = 1, suffix = '%') {
@@ -92,13 +96,36 @@ $('#app').innerHTML = `
   <dialog id="result-dialog"><div class="dialog-heading"><h2>Your music, in a new light.</h2><button class="tool-icon" data-close="result-dialog" aria-label="Close video preview">${icon('close')}</button></div><p>Your video is ready. Preview it here, then save it to your device.</p><video id="result-video" controls playsinline aria-label="Rendered video preview" style="width:100%;border-radius:6px;background:#060910"></video><p class="inline-note" id="result-details"></p><div class="dialog-actions"><button class="btn" data-close="result-dialog">Keep creating</button><button class="btn primary" id="save-video">${icon('download')} Download video</button></div></dialog>
 `;
 
+$('#panel-scene').insertAdjacentHTML('afterbegin', `<section class="control-group"><div class="control-title"><span>${icon('sliders')} Preview performance</span></div><label class="select-label" for="setting-previewQuality">Preview quality</label><select class="select" id="setting-previewQuality" data-setting="previewQuality"><option value="balanced">Balanced · up to 1080p / 60 fps</option><option value="economy">Low power · up to 720p / 30 fps</option><option value="native">Native resolution · up to 60 fps</option></select><p class="inline-note">Lower preview quality saves graphics power. Screenshots and video exports keep their chosen resolution.</p></section>`);
 const canvas = $('#visualizer'), renderer = new PianoRenderer(canvas);
+const frameLoop = new FrameLoop(frame), transportCadence = new FrameCadence(30);
+let previewCadence = new FrameCadence(previewProfile(settings.previewQuality).fps);
+let previewQuality = settings.previewQuality, previewDirty = true, previewVisible = true;
+const transport = { play: $('#play'), time: $('#current-time'), seek: $('#seek'), playhead: $('#playhead'), progress: $('#recording-progress') };
+let transportPlaying, transportTime = '', transportPosition = -1, timelineWidth = 0;
+let timelineDirty = true, timelineSignature = '', timelineNotes = null, timelineLength = -1, timelineBounds = [21, 108];
+function requestFrame() { previewDirty = true; if (!document.hidden) frameLoop.invalidate(); }
+function resizePreview() {
+  const rect = canvas.getBoundingClientRect();
+  const size = previewSize(rect.width, rect.height, devicePixelRatio || 1, settings.previewQuality);
+  renderer.resize(size.width, size.height);
+  requestFrame();
+}
+function currentLiveNotes() {
+  if (liveSnapshotDirty) { liveSnapshot = [...liveNotes.values()]; liveSnapshotDirty = false; }
+  return liveSnapshot;
+}
 function toast(message, error = false) {
   clearTimeout(toastTimer); const node = $('#toast'); node.textContent = message;
   node.className = `toast visible${error ? ' error' : ''}`;
   toastTimer = setTimeout(() => node.classList.remove('visible'), 4500);
 }
 function saveSettings() {
+  clearTimeout(settingsTimer);
+  settingsTimer = setTimeout(persistSettings, 150);
+}
+function persistSettings() {
+  settingsTimer = null;
   try { localStorage.setItem(storageKey, JSON.stringify(settings)); $('#saved-status').textContent = 'Changes saved on this device'; }
   catch { $('#saved-status').textContent = 'Use Save look to keep your settings'; }
 }
@@ -119,12 +146,31 @@ function updateSettingsUI() {
   });
   $('#preset-heading').textContent = PRESETS.find(p=>p.id === settings.preset)?.name || 'Custom look';
   $('#key-count').textContent = `${settings.maxNote - settings.minNote + 1} keys`;
+  if (previewQuality !== settings.previewQuality) {
+    previewQuality = settings.previewQuality;
+    previewCadence = new FrameCadence(previewProfile(previewQuality).fps);
+    resizePreview();
+  }
+  requestFrame();
 }
 function drawTimeline() {
+  timelineDirty = true;
+  requestFrame();
+}
+function paintTimeline() {
+  timelineDirty = false;
   const el = $('#timeline'), rect = el.getBoundingClientRect();
-  el.width = Math.max(1, Math.round(rect.width * devicePixelRatio)); el.height = Math.max(1, Math.round(rect.height * devicePixelRatio));
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.round(rect.width * dpr)), height = Math.max(1, Math.round(rect.height * dpr));
+  if (timelineWidth !== rect.width) { timelineWidth = rect.width; transportPosition = -1; updateTransport(false); }
+  const signature = `${width}:${height}:${song.duration}:${settings.colorMode}:${settings.colorA}:${settings.colorB}`;
+  if (timelineNotes === song.notes && timelineLength === song.notes.length && timelineSignature === signature) return;
+  if (timelineNotes !== song.notes || timelineLength !== song.notes.length) timelineBounds = pitchBounds(song.notes);
+  timelineNotes = song.notes; timelineLength = song.notes.length; timelineSignature = signature;
+  if (el.width !== width) el.width = width;
+  if (el.height !== height) el.height = height;
   const ctx = el.getContext('2d'); ctx.clearRect(0,0,el.width,el.height);
-  const [lo, hi] = pitchBounds(song.notes);
+  const [lo, hi] = timelineBounds;
   for (const note of song.notes) { const color = renderer.noteColor(note.midi,note.track,settings); ctx.fillStyle = `rgba(${color.join(',')},${0.35+note.velocity*.5})`; ctx.fillRect(note.time/song.duration*el.width, (1-(note.midi-lo)/(hi-lo+1))*(el.height-6), Math.max(1,note.duration/song.duration*el.width), Math.max(1.5,el.height/35)); }
 }
 function updateSongUI(isDemo = false) {
@@ -135,16 +181,30 @@ function updateSongUI(isDemo = false) {
   $('#timeline-ruler').innerHTML = Array.from({length:7},(_,i)=>`<span>${formatTime(song.duration*i/6)}</span>`).join('');
   updateTransport(); drawTimeline();
 }
-function updateTransport() {
-  $('#play').innerHTML = icon(playing ? 'pause' : 'play'); $('#play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
-  $('#play').title = `${playing ? 'Pause' : 'Play'} (Space)`; $('#current-time').textContent = formatTime(time);
-  $('#seek').value = time; $('#seek').setAttribute('aria-valuetext', `${formatTime(time)} of ${formatTime(song.duration)}`); $('#playhead').style.left = `${time / song.duration * 100}%`;
+function updateTransport(invalidate = true) {
+  if (transportPlaying !== playing) {
+    transportPlaying = playing;
+    transport.play.innerHTML = icon(playing ? 'pause' : 'play');
+    transport.play.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    transport.play.title = `${playing ? 'Pause' : 'Play'} (Space)`;
+  }
+  const label = `${formatTime(time)} of ${formatTime(song.duration)}`;
+  if (transportTime !== label) {
+    transportTime = label; transport.time.textContent = formatTime(time);
+    transport.seek.setAttribute('aria-valuetext', label);
+    if (recording) transport.progress.textContent = `Recording · ${formatTime(time)} / ${formatTime(song.duration)}`;
+  }
+  if (transportPosition !== time) {
+    transportPosition = time; transport.seek.value = time;
+    transport.playhead.style.transform = `translateX(${time / song.duration * timelineWidth}px)`;
+  }
+  if (invalidate) requestFrame();
 }
 function stopLive() { live.reset(); computerHeld.clear(); liveMode = false; $('#stage-title').textContent = song.name.toUpperCase(); }
 async function setPlaying(value) {
   if (recording || preparingRecording) return;
   if (value) { try { await audio.unlock(); } catch { toast('Your browser could not start audio.',true); return; } stopLive(); if (time >= song.duration) time = 0; }
-  playing = value; if (!value) audio.stop(); lastFrame = performance.now(); updateTransport();
+  playing = value; if (!value) audio.stop(); frameLoop.resetTime(); updateTransport();
 }
 function seek(value) {
   if (recording || preparingRecording) return; stopLive(); time = Math.max(0,Math.min(song.duration,Number(value))); audio.stop(); renderer.clearParticles(); updateTransport(); syncVideo(true);
@@ -171,10 +231,11 @@ async function loadLook(file) {
 function openDialog(id) { const dialog = $(`#${id}`); if (!dialog.open) dialog.showModal(); }
 function syncVideo(force = false) {
   if (!(background instanceof HTMLVideoElement) || !Number.isFinite(background.duration)) return;
+  if (!previewVisible && !recording) { if (!background.paused) background.pause(); return; }
   const desired = Math.max(0,Math.min(background.duration - .01,time-backgroundOffset));
-  background.playbackRate = speed;
+  if (background.playbackRate !== speed) background.playbackRate = speed;
   if (force || Math.abs(background.currentTime-desired) > .3) background.currentTime = desired;
-  if (playing && time>=backgroundOffset && desired<background.duration-.03) { if (background.paused) background.play().catch(()=>{}); } else if (!background.paused) background.pause();
+  if (playing && (previewVisible || recording) && time>=backgroundOffset && desired<background.duration-.03) { if (background.paused) background.play().catch(()=>{}); } else if (!background.paused) background.pause();
 }
 async function setBackground(file) {
   if (!file) return;
@@ -188,12 +249,14 @@ async function setBackground(file) {
   try {
     await new Promise((resolve,reject)=>{ media.addEventListener(isVideo?'loadeddata':'load',resolve,{once:true}); media.addEventListener('error',()=>reject(new Error('This media format is not supported by your browser.')),{once:true}); media.src=url; });
     if (background instanceof HTMLVideoElement) background.pause(); if (backgroundUrl) URL.revokeObjectURL(backgroundUrl);
-    background = media; backgroundUrl = url; $('#background-name').textContent = file.name; syncVideo(true); toast('Your scene is ready. Adjust dimming in Color.');
+    background = media; backgroundUrl = url;
+    if (isVideo) media.addEventListener('seeked', requestFrame);
+    $('#background-name').textContent = file.name; syncVideo(true); requestFrame(); toast('Your scene is ready. Adjust dimming in Color.');
   } catch(error) { URL.revokeObjectURL(url); toast(error.message,true); }
 }
 function screenshot() {
   const output = document.createElement('canvas'), painter = new PianoRenderer(output); painter.resize(1920,1080);
-  painter.render({song:liveMode?{...song,notes:[]}:song,time:liveMode?performance.now()/1000-liveStarted:time,dt:0,settings,liveNotes:[...liveNotes.values()],background,playing});
+  painter.render({song:liveMode?liveSong:song,time:liveMode?performance.now()/1000-liveStarted:time,dt:0,settings,liveNotes:currentLiveNotes(),background,playing});
   output.toBlob(blob=>{ if(blob) { download(blob,`${safeName(song.name)}-prism.png`); toast('Saved a Full HD snapshot.'); } else toast('Screenshot could not be saved.',true); },'image/png');
 }
 async function startRecording() {
@@ -222,9 +285,17 @@ async function startRecording() {
     const output = document.createElement('canvas'), painter = new PianoRenderer(output);
     const width = Number($('#export-resolution').value), fps = Number($('#export-fps').value); painter.resize(width,Math.round(width*9/16));
     painter.render({song,time,dt:0,settings,background,playing:false});
-    stream = output.captureStream(fps); const audioStream = audio.getStream(); for (const track of audioStream.getAudioTracks()) stream.addTrack(track.clone());
+    stream = output.captureStream(0);
+    let captureTrack = stream.getVideoTracks()[0];
+    // Explicit capture keeps drawing and encoding on the same frame clock.
+    // Older browsers retain their native automatic capture cadence.
+    if (typeof captureTrack.requestFrame !== 'function') {
+      for (const track of stream.getTracks()) track.stop();
+      stream = output.captureStream(fps); captureTrack = null;
+    }
+    const audioStream = audio.getStream(); for (const track of audioStream.getAudioTracks()) stream.addTrack(track.clone());
     const recorder = new MediaRecorder(stream,{mimeType,videoBitsPerSecond:width>=1920?12000000:7000000});
-    const chunks=[]; recording = {recorder,stream,painter,output,chunks,mimeType,error:false};
+    const chunks=[]; recording = {recorder,stream,painter,output,chunks,mimeType,error:false,cadence:new FrameCadence(fps),captureTrack,frameVersion:0,previewVersion:-1};
     recorder.ondataavailable = event => { if(event.data.size) chunks.push(event.data); };
     recorder.onerror = event => { if(recording) recording.error=true; toast(`Recording failed: ${event.error?.message || 'browser encoder error'}`,true); finishRecording(); };
     recorder.onstop = () => {
@@ -242,7 +313,7 @@ async function startRecording() {
     };
     if (document.hidden) throw new Error('Keep this tab visible to start a recording.');
     if (!$('#export-dialog').open) throw new Error('Recording cancelled.');
-    recorder.start(1000); preparingRecording = false; playing = true; lastFrame = performance.now(); syncVideo(true);
+    recorder.start(1000); preparingRecording = false; playing = true; frameLoop.resetTime(); transportTime = ''; syncVideo(true);
     $('#export-dialog').close(); $('#recording-banner').classList.add('visible'); $('#rec-indicator').style.display='block'; setRecordingControls(true); updateTransport(); toast('Recording started. Keep this tab visible.');
   } catch(error) { if(stream) for(const track of stream.getTracks()) track.stop(); recording=null; setRecordingControls(false); updateTransport(); toast(`Could not start recording: ${error.message}`,true); }
   finally { preparingRecording = false; $('#export-start').disabled = false; $('#export-start').innerHTML = `${icon('video')} Record video`; }
@@ -281,7 +352,7 @@ async function connectMidi() {
 
 document.querySelectorAll('[data-setting]').forEach(input=>input.addEventListener('input',()=>{
   const key=input.dataset.setting; const value=input.type==='checkbox'?input.checked:['range','number'].includes(input.type)?Number(input.value):input.value;
-  settings=sanitizeSettings({...settings,[key]:value,preset:'custom'}); updateSettingsUI(); saveSettings(); drawTimeline();
+  settings=sanitizeSettings({...settings,[key]:value,preset:key==='previewQuality'?settings.preset:'custom'}); updateSettingsUI(); saveSettings(); drawTimeline();
 }));
 document.querySelectorAll('[data-preset]').forEach(button=>button.addEventListener('click',()=>{ const preset=PRESETS.find(p=>p.id===button.dataset.preset); settings=sanitizeSettings({...settings,...preset.settings,preset:preset.id}); updateSettingsUI(); saveSettings(); drawTimeline(); }));
 function selectTab(button) { document.querySelectorAll('[data-tab]').forEach(tab=>{ const active=button===tab; tab.classList.toggle('active',active); tab.setAttribute('aria-selected',String(active)); tab.tabIndex=active?0:-1; $(`#panel-${tab.dataset.tab}`).hidden=!active; }); }
@@ -310,7 +381,7 @@ $('#studio-nav').onclick=()=>{document.querySelectorAll('dialog[open]').forEach(
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=> $(`#${button.dataset.close}`).close());
 $('#download-demo').onclick=()=>download(new Blob([encodeMidi(createDemoSong())],{type:'audio/midi'}),'prism-first-light.mid');
 $('#reset-settings').onclick=()=>{settings={...DEFAULT_SETTINGS};updateSettingsUI();saveSettings();drawTimeline();toast('The original Aurora look is restored.');};
-$('#remove-background').onclick=()=>{if(recording||preparingRecording)return toast('Finish the recording first.',true);if(background instanceof HTMLVideoElement)background.pause();background=null;if(backgroundUrl)URL.revokeObjectURL(backgroundUrl);backgroundUrl=null;$('#background-name').textContent='Add a backdrop or a video of your performance. Video audio is muted.';};
+$('#remove-background').onclick=()=>{if(recording||preparingRecording)return toast('Finish the recording first.',true);if(background instanceof HTMLVideoElement)background.pause();background=null;if(backgroundUrl)URL.revokeObjectURL(backgroundUrl);backgroundUrl=null;$('#background-name').textContent='Add a backdrop or a video of your performance. Video audio is muted.';requestFrame();};
 $('#video-offset').onchange=event=>{backgroundOffset=Math.max(-600,Math.min(600,Number(event.target.value)||0));event.target.value=backgroundOffset;syncVideo(true);};
 for(const id of ['connect-midi','mobile-midi']) $(`#${id}`).onclick=()=>void connectMidi();
 $('#disconnect-midi').onclick=()=>{disconnectMidi();toast('MIDI keyboard disconnected.');}; $('#midi-devices').onchange=event=>selectMidi(event.target.value);
@@ -323,20 +394,50 @@ document.addEventListener('keydown',event=>{
 });
 document.addEventListener('keyup',event=>{if(computerHeld.has(event.code)){liveOff(computerHeld.get(event.code));computerHeld.delete(event.code);}});
 window.addEventListener('blur',()=>{for(const midi of computerHeld.values())liveOff(midi);computerHeld.clear();});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){if(recording){finishRecording();toast('Recording ended early because the tab was hidden.');}else if(playing){playing=false;audio.stop();updateTransport();}stopLive();}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(recording){finishRecording();toast('Recording ended early because the tab was hidden.');}else if(playing){playing=false;audio.stop();updateTransport();}stopLive();syncVideo();frameLoop.stop();}else requestFrame();});
+window.addEventListener('pagehide',()=>{if(settingsTimer !== null && settingsTimer !== undefined){clearTimeout(settingsTimer);persistSettings();}});
 window.addEventListener('dragenter',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();dragDepth++;$('#drop-overlay').classList.add('visible');}});
 window.addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files'))event.preventDefault();});
 window.addEventListener('dragleave',event=>{event.preventDefault();if(--dragDepth<=0){dragDepth=0;$('#drop-overlay').classList.remove('visible');}});
 window.addEventListener('drop',event=>{event.preventDefault();dragDepth=0;$('#drop-overlay').classList.remove('visible');const file=event.dataTransfer?.files[0];if(file)void importMidi(file);});
 
-const resizeObserver=new ResizeObserver(()=>{const rect=canvas.getBoundingClientRect();const dpr=Math.min(devicePixelRatio||1,2);renderer.resize(Math.round(rect.width*dpr),Math.round(rect.height*dpr));drawTimeline();});resizeObserver.observe($('#stage'));resizeObserver.observe($('.timeline-track'));
-function frame(now) {
-  const dt=Math.min((now-lastFrame)/1000,.1);lastFrame=now;
+const resizeObserver=new ResizeObserver(()=>{resizePreview();drawTimeline();});resizeObserver.observe($('#stage'));resizeObserver.observe($('.timeline-track'));
+if (typeof IntersectionObserver !== 'undefined') {
+  const visibilityObserver = new IntersectionObserver(([entry]) => {
+    if (previewVisible === entry.isIntersecting) return;
+    previewVisible = entry.isIntersecting;
+    if (previewVisible) { syncVideo(true); requestFrame(); } else syncVideo();
+  });
+  visibilityObserver.observe(canvas);
+}
+function frame(now, dt) {
+  if (document.hidden) return false;
   if(playing){time=Math.min(song.duration,time+dt*speed);if(time>=song.duration){if(recording)finishRecording();else if(loop){time=0;audio.stop();renderer.clearParticles();syncVideo(true);}else{playing=false;audio.stop();updateTransport();}}}
   audio.tick(song,time,playing,speed);syncVideo();
+  if (timelineDirty) paintTimeline();
+  const previewDue = previewVisible && (previewDirty || previewCadence.due(now));
+  // Audio and transport keep their own clock even when the stage is offscreen
+  // or a high-refresh display does not need another preview frame yet.
+  if (!recording && !previewDue) {
+    if(playing && transportCadence.due(now))updateTransport(false);
+    return playing || (liveMode && liveNotes.size > 0 && previewVisible);
+  }
   const renderTime=liveMode?now/1000-liveStarted:time;
-  const data={song:liveMode?{...song,notes:[]}:song,time:renderTime,dt,settings,liveNotes:[...liveNotes.values()],background,playing:playing||liveMode};
-  renderer.render(data);if(recording){recording.painter.render(data);$('#recording-progress').textContent=`Recording · ${formatTime(time)} / ${formatTime(song.duration)}`;}
-  if(playing)updateTransport();requestAnimationFrame(frame);
+  const data={song:liveMode?liveSong:song,time:renderTime,dt,settings,liveNotes:currentLiveNotes(),background,playing:playing||liveMode};
+  if (recording) {
+    if (!recording.captureTrack || recording.cadence.due(now) || !playing) {
+      recording.painter.render(data);
+      recording.captureTrack?.requestFrame();
+      recording.frameVersion++;
+    }
+    // Preview and capture have independent cadences. Copy the latest output
+    // when the preview is due, even if capture did not render on this tick.
+    if (previewDue && (previewDirty || recording.previewVersion !== recording.frameVersion)) {
+      renderer.ctx.drawImage(recording.output,0,0,canvas.width,canvas.height);
+      recording.previewVersion = recording.frameVersion; previewDirty = false;
+    }
+  } else { renderer.render(data); previewDirty = false; }
+  if(playing && transportCadence.due(now))updateTransport(false);
+  return playing || (liveMode && liveNotes.size > 0 && previewVisible);
 }
-updateSettingsUI();updateSongUI(true);audio.setVolume(volume);fillRange($('#volume'));requestAnimationFrame(frame);
+updateSettingsUI();updateSongUI(true);audio.setVolume(volume);fillRange($('#volume'));requestFrame();

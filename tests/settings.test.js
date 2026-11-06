@@ -70,6 +70,8 @@ test('only supported color values and style modes reach the renderer', () => {
   assert.equal(sanitizeSettings({ noteStyle: 'unknown' }).noteStyle, 'glass');
   for (const colorMode of ['gradient', 'track', 'rainbow', 'single']) assert.equal(sanitizeSettings({ colorMode }).colorMode, colorMode);
   for (const noteStyle of ['glass', 'solid', 'outline']) assert.equal(sanitizeSettings({ noteStyle }).noteStyle, noteStyle);
+  for (const previewQuality of ['balanced', 'economy', 'native']) assert.equal(sanitizeSettings({ previewQuality }).previewQuality, previewQuality);
+  assert.equal(sanitizeSettings({ previewQuality: 'unlimited' }).previewQuality, 'balanced');
 });
 
 test('valid presets and disabled effects survive sanitization', () => {

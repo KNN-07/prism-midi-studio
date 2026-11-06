@@ -1,3 +1,5 @@
+import { getNoteIndex } from './note-index.js';
+
 /** Small, sample-free piano synth and transport scheduler. */
 export class PianoAudio {
   constructor() {
@@ -80,14 +82,14 @@ export class PianoAudio {
     const restart = !this.playing || song !== this.song || speed !== this.speed || Math.abs(time - expected) > .18;
     if (restart) {
       this.stop(); this.song = song; this.playing = true;
-      let lo = 0, hi = song.notes.length;
-      while (lo < hi) { const mid = (lo + hi) >> 1; if (song.notes[mid].time < time - .002) lo = mid + 1; else hi = mid; }
+      const index = getNoteIndex(song.notes), lo = index.lowerBound(time - .002);
       this.nextIndex = lo;
       // Restore held notes when starting in the middle of a phrase.
-      for (let i = 0; i < lo; i++) {
-        const n = song.notes[i];
-        if (n.time + n.duration > time + .025) this._voice(n.midi, n.velocity * Math.exp(-(time - n.time) * .3), now, (n.time + n.duration - time) / speed);
-      }
+      // The shared interval index skips expired history even when a very old
+      // note is still held, keeping seeks and speed changes responsive.
+      index.forEach(time + .025, time, (n, i) => {
+        if (i < lo && n.time + n.duration > time + .025) this._voice(n.midi, n.velocity * Math.exp(-(time - n.time) * .3), now, (n.time + n.duration - time) / speed);
+      });
     }
     const horizon = time + .14 * speed;
     while (this.nextIndex < song.notes.length && song.notes[this.nextIndex].time <= horizon) {
