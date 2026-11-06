@@ -1,0 +1,28 @@
+name: Check application
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test MIDI parsing and static server
+        run: node --test
+      - name: Build static application
+        run: node scripts/build.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prism-midi-studio
+          path: dist/
+          if-no-files-found: error
