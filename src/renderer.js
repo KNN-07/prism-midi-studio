@@ -51,6 +51,7 @@ export class PianoRenderer {
     this.reactiveRing = [];
     this.activeNotes = new Map();
     this.liveColumns = new WeakMap();
+    this.liveColumnNotes = new WeakSet();
   }
 
   resize(width, height) {
@@ -125,7 +126,7 @@ export class PianoRenderer {
     const settings = this.querySettings;
     if (!this.keys.has(note.midi)) return;
     const end = note.time + visualNoteDuration(note, settings);
-    if (end >= this.queryTime) this.visibleNotes.push(note);
+    if (end >= this.queryVisibleFrom) this.visibleNotes.push(note);
     if (note.time <= this.queryTime) {
       if (this.queryEffects && end > this.queryTime - 2) this.reactiveRing[this.reactiveCount++ % 36] = note;
       if (end > this.queryTime) this.activeNotes.set(note.midi, note);
@@ -155,8 +156,10 @@ export class PianoRenderer {
     this.queryTime = time;
     this.querySettings = settings;
     this.queryEffects = settings.trails || (settings.particles && settings.particleAmount > 0);
+    const rising = settings.noteDirection === 'up';
+    this.queryVisibleFrom = rising ? time - settings.fallTime : time;
     this.noteIndex = getNoteIndex(notes);
-    this.noteIndex.forEach(time - (this.queryEffects ? 2 : 0), time + settings.fallTime, this._collectNote, this);
+    this.noteIndex.forEach(Math.min(this.queryVisibleFrom, time - (this.queryEffects ? 2 : 0)), rising ? time : time + settings.fallTime, this._collectNote, this);
     for (const note of liveNotes) {
       if (!this.keys.has(note.midi)) continue;
       const end = note.time + visualNoteDuration(note, settings);
@@ -165,7 +168,7 @@ export class PianoRenderer {
         active.set(note.midi, note);
         // Live keys leave a growing column above the strike line.
         let column = this.liveColumns.get(note);
-        if (!column) { column = { ...note }; this.liveColumns.set(note, column); }
+        if (!column) { column = { ...note }; this.liveColumns.set(note, column); this.liveColumnNotes.add(column); }
         column.time = time - 0.02;
         column.duration = Math.min(2.5, Math.max(0.12, time - note.time));
         visible.push(column);
@@ -284,9 +287,14 @@ export class PianoRenderer {
     for (const note of notes) {
       const key = this.keys.get(note.midi);
       const color = this.noteColor(note.midi, note.track || 0, settings);
-      const bottom = strike - (note.time - time) * speed;
-      const naturalHeight = Math.max(7 * scale, visualNoteDuration(note, settings) * speed);
-      const top = bottom - naturalHeight;
+      const rising = settings.noteDirection === 'up' && !this.liveColumnNotes.has(note);
+      const duration = visualNoteDuration(note, settings);
+      // Rising file notes grow from note-on, then leave the keyboard at note-off.
+      // Live columns retain their existing shape regardless of file direction.
+      if (rising && note.time > time) continue;
+      const naturalHeight = rising ? duration * speed : Math.max(7 * scale, duration * speed);
+      const bottom = rising ? strike - Math.max(0, time - note.time - duration) * speed : strike - (note.time - time) * speed;
+      const top = rising ? strike - (time - note.time) * speed : bottom - naturalHeight;
       const y = Math.max(-15 * scale, top);
       const h = Math.min(strike + 3 * scale, bottom) - y;
       if (h <= 0) continue;
@@ -298,7 +306,7 @@ export class PianoRenderer {
       const paintKey = note.midi * 2 + (settings.colorMode === 'track' && note.track % 2 ? 1 : 0);
       let paint = this.notePaints.get(paintKey);
       if (!paint) {
-        // The fill is horizontal, so its coordinates do not change as notes fall.
+        // The fill is horizontal, so its coordinates do not change as notes move.
         const fill = c.createLinearGradient(x, 0, x + w, 0);
         let stops;
         if (settings.noteStyle === 'solid') {
@@ -311,9 +319,9 @@ export class PianoRenderer {
         this.notePaints.set(paintKey, paint);
       }
       const wideStroke = Math.max(1.5, 4 * scale), edgeStroke = Math.max(1, 1.7 * scale);
-      // Clipped and growing live columns keep the direct path: their silhouette
+      // Clipped and growing columns keep the direct path: their silhouette
       // changes each frame, so caching them would churn GPU textures.
-      const sprite = glow > 0 && y === top && note.time >= time
+      const sprite = glow > 0 && y === top && (rising ? note.time + duration <= time : note.time >= time)
         ? this.noteShadows.get(`${paintKey}:${Math.round(naturalHeight * 1e6)}`, {
           x, width: w, height: naturalHeight, radius, blur: glow * 23 * scale,
           shadow: paint.shadow, stops: paint.stops,

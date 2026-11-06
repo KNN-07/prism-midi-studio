@@ -68,8 +68,11 @@ test('only supported color values and style modes reach the renderer', () => {
   assert.equal(valid.background, '#123456');
   assert.equal(sanitizeSettings({ colorMode: 'unknown' }).colorMode, 'gradient');
   assert.equal(sanitizeSettings({ noteStyle: 'unknown' }).noteStyle, 'glass');
+  assert.equal(sanitizeSettings({ noteDirection: 'reverse' }).noteDirection, 'down');
+  assert.equal(sanitizeSettings({}).noteDirection, 'down');
   for (const colorMode of ['gradient', 'track', 'rainbow', 'single']) assert.equal(sanitizeSettings({ colorMode }).colorMode, colorMode);
   for (const noteStyle of ['glass', 'solid', 'outline']) assert.equal(sanitizeSettings({ noteStyle }).noteStyle, noteStyle);
+  for (const noteDirection of ['down', 'up']) assert.equal(sanitizeSettings({ noteDirection }).noteDirection, noteDirection);
   for (const previewQuality of ['balanced', 'economy', 'native']) assert.equal(sanitizeSettings({ previewQuality }).previewQuality, previewQuality);
   assert.equal(sanitizeSettings({ previewQuality: 'unlimited' }).previewQuality, 'balanced');
 });

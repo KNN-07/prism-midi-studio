@@ -6,7 +6,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   preset: 'aurora', colorMode: 'gradient', colorA: '#53e8ef', colorB: '#b79aff',
   particles: true, particleStyle: 'sparks', particleAmount: 65, particleSpeed: 45, turbulence: 55,
   glow: 70, trails: true, saber: true, keyboard: true, grid: true,
-  extendPedalNotes: false, noteStyle: 'glass', fallTime: 3.8, background: '#060910', backgroundDim: 45, backgroundOpacity: 100,
+  extendPedalNotes: false, noteStyle: 'glass', noteDirection: 'down', fallTime: 3.8, background: '#060910', backgroundDim: 45, backgroundOpacity: 100,
   keyboardHeight: 17, minNote: 21, maxNote: 108, labels: false, previewQuality: 'balanced',
 });
 
@@ -48,6 +48,7 @@ export function sanitizeSettings(input = {}) {
   for (const key of ['colorA','colorB','background']) if (!/^#[a-f\d]{6}$/i.test(result[key])) result[key] = DEFAULT_SETTINGS[key];
   if (!['gradient','track','rainbow','single'].includes(result.colorMode)) result.colorMode = 'gradient';
   if (!['glass','solid','outline'].includes(result.noteStyle)) result.noteStyle = 'glass';
+  if (!['down','up'].includes(result.noteDirection)) result.noteDirection = DEFAULT_SETTINGS.noteDirection;
   if (!PARTICLE_STYLES.some(style => style.id === result.particleStyle)) result.particleStyle = DEFAULT_SETTINGS.particleStyle;
   if (!['balanced','economy','native'].includes(result.previewQuality)) result.previewQuality = 'balanced';
   return result;

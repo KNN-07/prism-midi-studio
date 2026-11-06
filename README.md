@@ -16,7 +16,7 @@ No account. No installation to try it. Your MIDI files and background media stay
 
 - **Bring your music.** Drop in a `.mid` or `.midi` file, explore the original demo, or connect a MIDI keyboard for live visuals with sustain pedal support.
 - **Find your mood.** Start with Aurora, Ember, Nocturne, or Spectrum. Choose glass, solid, or outlined notes, then tune particles, ribbons, glow, and keyboard light.
-- **Set the scene.** Add your own background image or video. Adjust colors, darkness, keyboard size, and the falling-note timing.
+- **Set the scene.** Add your own background image or video. Adjust colors, darkness, keyboard size, note direction, and travel time.
 - **Practice and explore.** Play, pause, seek, loop, and change playback speed. You can also play an octave with your computer keyboard.
 - **Make quick MIDI edits.** Open the MIDI editor tab to add, move, resize, or delete notes, adjust velocity, and undo or redo changes. Listen with the shared playback controls, then download your edited MIDI.
 - **Keep your signature look.** Settings persist in your browser. Save and load a settings file to reuse or share your style.
@@ -27,6 +27,8 @@ No account. No installation to try it. Your MIDI files and background media stay
 1. **[Open the studio](https://knn-07.github.io/prism-midi-studio/)** and press **Play** to try *First light*, or choose **Import MIDI** to load your performance.
 2. **Choose a preset** and make it yours using the Effects, Color, and Scene controls.
 3. **Choose Export video** to record your performance or save an image.
+
+For rising MIDI notes, choose **Scene → Note direction → Up from keyboard**. Bars grow upward as notes play and continue rising after release. **Down to keyboard** keeps the original falling-note view. **Travel time** controls how long notes take to cross the canvas in either direction. The direction is saved with your look and applies to images and video exports; music still plays forward.
 
 For quick corrections, switch to **MIDI editor** above the preview. Select a note to change its pitch, start, length, or velocity; drag it to move it, or drag its right edge to resize. Use **Add note** or double-click an empty area to draw a note. Changes apply to playback and the visualizer immediately and stay in this session; choose **Download MIDI** to keep them before reloading or importing another performance.
 
