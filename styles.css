@@ -586,14 +586,16 @@ button svg {
   height:100%;
   opacity:.8
 }
-.timeline-track input {
+/* Outrank the shared range styles so the whole timeline stays draggable. */
+.timeline-track input[type=range] {
   position:absolute;
   inset:0;
   width:100%;
   height:100%;
   margin:0;
   opacity:0;
-  cursor:crosshair
+  cursor:ew-resize;
+  touch-action:none
 }
 .timeline-track:focus-within {
   outline:2px solid var(--accent);
