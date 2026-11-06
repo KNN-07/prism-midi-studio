@@ -1,11 +1,12 @@
-/** Shared model. Note: { midi, time, duration, velocity (0..1), track, channel? }.
+/** Shared model. Note: { midi, time, duration, velocity (0..1), track, channel?, keyDuration? }.
  * Song: { name, notes, duration, bpm, tracks: [{name, count}], tempos? }.
+ * duration includes sustain; optional keyDuration ends at key release.
  * All times are seconds; MIDI pitches 0..127. */
 export const DEFAULT_SETTINGS = Object.freeze({
   preset: 'aurora', colorMode: 'gradient', colorA: '#53e8ef', colorB: '#b79aff',
   particles: true, particleStyle: 'sparks', particleAmount: 65, particleSpeed: 45, turbulence: 55,
   glow: 70, trails: true, saber: true, keyboard: true, grid: true,
-  noteStyle: 'glass', fallTime: 3.8, background: '#060910', backgroundDim: 45, backgroundOpacity: 100,
+  extendPedalNotes: false, noteStyle: 'glass', fallTime: 3.8, background: '#060910', backgroundDim: 45, backgroundOpacity: 100,
   keyboardHeight: 17, minNote: 21, maxNote: 108, labels: false, previewQuality: 'balanced',
 });
 
@@ -50,4 +51,9 @@ export function sanitizeSettings(input = {}) {
   if (!PARTICLE_STYLES.some(style => style.id === result.particleStyle)) result.particleStyle = DEFAULT_SETTINGS.particleStyle;
   if (!['balanced','economy','native'].includes(result.previewQuality)) result.previewQuality = 'balanced';
   return result;
+}
+
+/** Visual timing can exclude pedal sustain without changing audio timing. */
+export function visualNoteDuration(note, settings) {
+  return settings.extendPedalNotes ? note.duration : (note.keyDuration ?? note.duration);
 }

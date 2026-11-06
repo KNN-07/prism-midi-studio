@@ -1,3 +1,4 @@
+import { visualNoteDuration } from './model.js';
 import { EMPTY_NOTES, getNoteIndex } from './note-index.js';
 import { NoteShadowCache } from './note-sprites.js';
 export { NoteWindowIndex } from './note-index.js';
@@ -121,8 +122,9 @@ export class PianoRenderer {
   }
 
   _collectNote(note) {
+    const settings = this.querySettings;
     if (!this.keys.has(note.midi)) return;
-    const end = note.time + note.duration;
+    const end = note.time + visualNoteDuration(note, settings);
     if (end >= this.queryTime) this.visibleNotes.push(note);
     if (note.time <= this.queryTime) {
       if (this.queryEffects && end > this.queryTime - 2) this.reactiveRing[this.reactiveCount++ % 36] = note;
@@ -151,12 +153,13 @@ export class PianoRenderer {
     visible.length = 0; reactive.length = 0; active.clear();
     this.reactiveCount = 0;
     this.queryTime = time;
+    this.querySettings = settings;
     this.queryEffects = settings.trails || (settings.particles && settings.particleAmount > 0);
     this.noteIndex = getNoteIndex(notes);
     this.noteIndex.forEach(time - (this.queryEffects ? 2 : 0), time + settings.fallTime, this._collectNote, this);
     for (const note of liveNotes) {
       if (!this.keys.has(note.midi)) continue;
-      const end = note.time + note.duration;
+      const end = note.time + visualNoteDuration(note, settings);
       if (this.queryEffects && end > time - 2) this.reactiveRing[this.reactiveCount++ % 36] = note;
       if (end > time) {
         active.set(note.midi, note);
@@ -282,7 +285,7 @@ export class PianoRenderer {
       const key = this.keys.get(note.midi);
       const color = this.noteColor(note.midi, note.track || 0, settings);
       const bottom = strike - (note.time - time) * speed;
-      const naturalHeight = Math.max(7 * scale, note.duration * speed);
+      const naturalHeight = Math.max(7 * scale, visualNoteDuration(note, settings) * speed);
       const top = bottom - naturalHeight;
       const y = Math.max(-15 * scale, top);
       const h = Math.min(strike + 3 * scale, bottom) - y;
@@ -411,7 +414,7 @@ export class PianoRenderer {
     let strokes = 0;
     for (let i = Math.max(0, notes.length - 30); i < notes.length; i++) {
       const note = notes[i];
-      const end = note.time + note.duration;
+      const end = note.time + visualNoteDuration(note, settings);
       const fade = clamp(1 - Math.max(0, time - end) / 0.9, 0, 1);
       if (!fade || time < note.time) continue;
       const key = this.keys.get(note.midi);
@@ -498,7 +501,7 @@ export class PianoRenderer {
         const life = particles[offset];
         const age = ((time - note.time + particles[offset + 1]) % life + life) % life;
         const emittedAt = time - age;
-        if (emittedAt < note.time || emittedAt > note.time + note.duration) continue;
+        if (emittedAt < note.time || emittedAt > note.time + visualNoteDuration(note, settings)) continue;
         const progress = age / life;
         const spread = particles[offset + 2] * this.keyWidth * 0.75;
         const drift = particles[offset + 3] * this.keyWidth * age * (1 + turbulence * 3.5);

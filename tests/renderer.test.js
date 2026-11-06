@@ -115,3 +115,19 @@ test('live columns keep growing while live effects remain after song sources', (
   assert.deepEqual(renderer.reactiveNotes, []);
   assert.equal(renderer.activeNotes.size, 0);
 });
+
+
+test('pedal extension toggle switches bars and active keys without changing audio duration', () => {
+  const renderer = collectionRenderer();
+  const note = { midi: 60, time: 0, duration: 4, keyDuration: .25, velocity: .8, track: 0 };
+  const song = { notes: [note] };
+  renderer.render({ song, time: 1, settings: { ...DEFAULT_SETTINGS } });
+  assert.equal(renderer.visibleNotes.length, 0);
+  assert.equal(renderer.activeNotes.size, 0);
+  renderer.render({ song, time: 1, settings: { ...DEFAULT_SETTINGS, extendPedalNotes: true } });
+  assert.deepEqual(renderer.visibleNotes, [note]);
+  assert.equal(renderer.activeNotes.get(60), note);
+  renderer.render({ song, time: 1, settings: { ...DEFAULT_SETTINGS } });
+  assert.equal(renderer.visibleNotes.length, 0);
+  assert.equal(note.duration, 4);
+});

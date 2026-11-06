@@ -91,7 +91,7 @@ export function parseMidi(buffer, filename = 'Untitled performance') {
   const active = new Map(), sustained = Array.from({ length: 16 }, () => []), pedal = Array(16).fill(false), notes = [];
   const finish = (note, tick) => {
     const time = note.time, end = seconds(Math.max(note.tick, tick));
-    notes.push({ midi: note.midi, time, duration: Math.max(0.001, end - time), velocity: note.velocity, track: note.track, channel: note.channel });
+    notes.push({ midi: note.midi, time, duration: Math.max(0.001, end - time), keyDuration: note.keyDuration ?? Math.max(0.001, end - time), velocity: note.velocity, track: note.track, channel: note.channel });
     tracks[note.track].count++;
   };
   const releasePedal = (channel, tick) => { for (const note of sustained[channel]) finish(note, tick); sustained[channel] = []; };
@@ -108,6 +108,7 @@ export function parseMidi(buffer, filename = 'Untitled performance') {
       if (queue) {
         const note = queue.head;
         queue.head = note.next; note.next = null;
+        note.keyDuration = Math.max(0.001, seconds(e.tick) - note.time);
         if (pedal[e.channel]) sustained[e.channel].push(note); else finish(note, e.tick);
         if (!queue.head) active.delete(key);
       }
@@ -115,7 +116,7 @@ export function parseMidi(buffer, filename = 'Untitled performance') {
       if (e.a === 64) { pedal[e.channel] = e.b >= 64; if (!pedal[e.channel]) releasePedal(e.channel, e.tick); }
       if (e.a === 120 || e.a === 123) {
         for (const [id, queue] of active) if (Math.floor(id / 128) === e.channel) {
-          for (let note = queue.head; note; note = note.next) { if (e.a === 123 && pedal[e.channel]) sustained[e.channel].push(note); else finish(note, e.tick); }
+          for (let note = queue.head; note; note = note.next) { if (e.a === 123 && pedal[e.channel]) { note.keyDuration = Math.max(0.001, seconds(e.tick) - note.time); sustained[e.channel].push(note); } else finish(note, e.tick); }
           active.delete(id);
         }
         if (e.a === 120) releasePedal(e.channel, e.tick);

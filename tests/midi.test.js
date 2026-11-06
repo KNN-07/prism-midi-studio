@@ -24,6 +24,7 @@ test('running status, note-on zero release, and pitches beyond piano range', () 
 test('sustain pedal holds released notes until pedal up', () => {
   const song = parseMidi(midi([[0,176,64,127,0,144,60,100,...vlq(240),128,60,0,...vlq(720),176,64,0,...end]]));
   assert.equal(song.notes[0].duration,1);
+  assert.equal(song.notes[0].keyDuration,.25);
 });
 
 test('overlapping repetitions pair note-offs in input order', () => {
