@@ -3,18 +3,35 @@
  * All times are seconds; MIDI pitches 0..127. */
 export const DEFAULT_SETTINGS = Object.freeze({
   preset: 'aurora', colorMode: 'gradient', colorA: '#53e8ef', colorB: '#b79aff',
-  particles: true, particleAmount: 65, particleSpeed: 45, turbulence: 55,
+  particles: true, particleStyle: 'sparks', particleAmount: 65, particleSpeed: 45, turbulence: 55,
   glow: 70, trails: true, saber: true, keyboard: true, grid: true,
   noteStyle: 'glass', fallTime: 3.8, background: '#060910', backgroundDim: 45,
   keyboardHeight: 17, minNote: 21, maxNote: 108, labels: false, previewQuality: 'balanced',
 });
+
+export const PARTICLE_STYLES = [
+  { id: 'sparks', name: 'Sparks' }, { id: 'stars', name: 'Twinkling stars' },
+  { id: 'bubbles', name: 'Floating bubbles' }, { id: 'fireflies', name: 'Fireflies' },
+  { id: 'confetti', name: 'Confetti' }, { id: 'comets', name: 'Comet trails' },
+];
 
 export const PRESETS = [
   { id: 'aurora', name: 'Aurora', subtitle: 'A little otherworldly', colors: ['#53e8ef', '#b79aff'], settings: { colorA: '#53e8ef', colorB: '#b79aff', colorMode: 'gradient', noteStyle: 'glass', particleAmount: 65, turbulence: 55, glow: 70, trails: true, saber: true } },
   { id: 'ember', name: 'Ember', subtitle: 'Warmth in every note', colors: ['#ffc26f', '#ff6389'], settings: { colorA: '#ffc26f', colorB: '#ff6389', colorMode: 'gradient', noteStyle: 'glass', particleAmount: 80, turbulence: 35, glow: 85, trails: true, saber: true } },
   { id: 'nocturne', name: 'Nocturne', subtitle: 'Quiet, after hours', colors: ['#7da4ff', '#e1dcff'], settings: { colorA: '#7da4ff', colorB: '#e1dcff', colorMode: 'track', noteStyle: 'solid', particleAmount: 28, turbulence: 25, glow: 45, trails: false, saber: true } },
   { id: 'spectrum', name: 'Spectrum', subtitle: 'All the colors of sound', colors: ['#69ffb6', '#ff85e6'], settings: { colorA: '#69ffb6', colorB: '#ff85e6', colorMode: 'rainbow', noteStyle: 'outline', particleAmount: 75, turbulence: 80, glow: 80, trails: true, saber: true } },
-];
+  ...[
+    ['sakura', 'Sakura', 'Petals in the moonlight', '#ff9ecb', '#ffe1ec', '#140b18', 'confetti', 48, 28, 35, 55, 'glass', true],
+    ['ocean', 'Ocean', 'Drift into the deep', '#36cfff', '#64ffd8', '#04121c', 'bubbles', 42, 30, 30, 55, 'glass', true],
+    ['starlight', 'Starlight', 'A sky full of melody', '#aebcff', '#fff0b3', '#090b20', 'stars', 38, 25, 20, 65, 'outline', false],
+    ['forest', 'Forest', 'A glowing woodland', '#8cffad', '#e4ed80', '#07150e', 'fireflies', 45, 22, 70, 50, 'solid', false],
+    ['cyber', 'Cyber', 'Electric after dark', '#00edff', '#ff49dc', '#10051b', 'comets', 72, 75, 45, 85, 'outline', true],
+    ['celebration', 'Celebration', 'Every chord a celebration', '#ffd45c', '#ff77bd', '#180c19', 'confetti', 85, 60, 80, 65, 'solid', false],
+  ].map(([id, name, subtitle, colorA, colorB, background, particleStyle, particleAmount, particleSpeed, turbulence, glow, noteStyle, trails]) => ({
+    id, name, subtitle, colors: [colorA, colorB],
+    settings: { colorA, colorB, background, particleStyle, particleAmount, particleSpeed, turbulence, glow, noteStyle, trails, saber: true, colorMode: id === 'celebration' ? 'rainbow' : 'gradient' },
+  })),
+].map(preset => ({ ...preset, settings: { particles: true, particleStyle: 'sparks', particleSpeed: 45, background: '#060910', ...preset.settings } }));
 
 export function sanitizeSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) input = {};
@@ -30,6 +47,7 @@ export function sanitizeSettings(input = {}) {
   for (const key of ['colorA','colorB','background']) if (!/^#[a-f\d]{6}$/i.test(result[key])) result[key] = DEFAULT_SETTINGS[key];
   if (!['gradient','track','rainbow','single'].includes(result.colorMode)) result.colorMode = 'gradient';
   if (!['glass','solid','outline'].includes(result.noteStyle)) result.noteStyle = 'glass';
+  if (!PARTICLE_STYLES.some(style => style.id === result.particleStyle)) result.particleStyle = DEFAULT_SETTINGS.particleStyle;
   if (!['balanced','economy','native'].includes(result.previewQuality)) result.previewQuality = 'balanced';
   return result;
 }

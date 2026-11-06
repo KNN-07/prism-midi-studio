@@ -474,6 +474,7 @@ export class PianoRenderer {
 
   drawParticles(notes, time, strike, height, scale, settings) {
     const c = this.ctx;
+    const style = settings.particleStyle || 'sparks';
     const sourceCount = Math.min(36, notes.length);
     const perNote = Math.min(Math.floor(1800 / Math.max(1, sourceCount)), Math.round(25 + settings.particleAmount * 2.7));
     const turbulence = settings.turbulence / 100;
@@ -497,11 +498,52 @@ export class PianoRenderer {
         const spread = particles[offset + 2] * this.keyWidth * 0.75;
         const drift = particles[offset + 3] * this.keyWidth * age * (1 + turbulence * 3.5);
         const curl = Math.sin(age * 6.5 - time * 1.6 + note.midi * 0.7) * this.keyWidth * turbulence * age * 1.1;
-        const x = key.center + spread + drift + curl;
-        const y = strike - age * rise * particles[offset + 4];
+        let x = key.center + spread + drift + curl;
+        let y = strike - age * rise * particles[offset + 4];
         const alpha = Math.pow(1 - progress, 1.2) * particles[offset + 5] * Math.min(1, age * 12 + 0.6);
         const size = particles[offset + 6] * Math.max(0.8, scale);
-        if (i % 11 === 0) {
+        c.globalAlpha = alpha;
+        c.fillStyle = i % 9 === 0 ? bright : normal;
+        if (style === 'stars') {
+          const radius = size * (1.5 + 0.6 * Math.sin(age * 9 + i));
+          c.globalAlpha = alpha * (0.55 + 0.45 * Math.pow(Math.sin(age * 5 + i), 2));
+          c.beginPath();
+          for (let point = 0; point < 8; point++) {
+            const angle = point * Math.PI / 4;
+            const r = point % 2 ? radius * 0.3 : radius;
+            const px = x + Math.cos(angle) * r, py = y + Math.sin(angle) * r;
+            if (point === 0) c.moveTo(px, py); else c.lineTo(px, py);
+          }
+          c.closePath(); c.fill();
+        } else if (style === 'bubbles') {
+          const radius = size * (1.5 + progress * 2);
+          c.globalAlpha = alpha * 0.65; c.lineWidth = Math.max(0.6, scale * 0.7);
+          c.beginPath(); c.arc(x, y, radius, 0, Math.PI * 2); c.stroke();
+          c.fillStyle = bright;
+          c.fillRect(x - radius * 0.4, y - radius * 0.5, size * 0.6, size * 0.6);
+        } else if (style === 'fireflies') {
+          x += Math.sin(age * 4 + i) * this.keyWidth * age;
+          y += Math.cos(age * 3 + i) * this.keyWidth * age;
+          c.globalAlpha = alpha * (0.35 + 0.65 * Math.pow(Math.sin(age * 4 + i), 2));
+          c.beginPath(); c.arc(x, y, size, 0, Math.PI * 2); c.fill();
+          c.globalAlpha *= 0.15;
+          c.beginPath(); c.arc(x, y, size * 3, 0, Math.PI * 2); c.fill();
+        } else if (style === 'confetti') {
+          const angle = age * 5 + i;
+          const dx = Math.cos(angle) * size * 2, dy = Math.sin(angle) * size * 2;
+          const flutter = Math.cos(age * 8 + i) * 0.5;
+          c.beginPath(); c.moveTo(x - dx - dy * flutter, y - dy + dx * flutter);
+          c.lineTo(x + dx - dy * flutter, y + dy + dx * flutter);
+          c.lineTo(x + dx + dy * flutter, y + dy - dx * flutter);
+          c.lineTo(x - dx + dy * flutter, y - dy - dx * flutter);
+          c.closePath(); c.fill();
+        } else if (style === 'comets') {
+          c.lineWidth = size * 0.75;
+          c.globalAlpha = alpha * 0.5;
+          c.beginPath(); c.moveTo(x - drift * 0.12, y + (12 + age * 16) * scale); c.lineTo(x, y); c.stroke();
+          c.globalAlpha = alpha; c.fillStyle = bright;
+          c.fillRect(x - size / 2, y - size / 2, size, size);
+        } else if (i % 11 === 0) {
           c.globalAlpha = alpha * 0.65; c.lineWidth = size * 0.6;
           c.beginPath(); c.moveTo(x, y); c.lineTo(x - drift * 0.04, y + (3 + age * 4) * scale); c.stroke();
         } else {
